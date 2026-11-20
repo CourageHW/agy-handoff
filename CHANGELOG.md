@@ -2,10 +2,20 @@
 
 All notable changes to `agy-handoff` are documented in this file.
 
-## Unreleased
+## [0.2.1] - 2026-11-21
+
+### Added
+- **Preloaded Context & Diff Snapshots (`src/context.mjs`, `src/mcp-server.mjs`)**: Small scoped `context.files` (up to 24 KB/file, 36 KB total, excluding sensitive/binary files), compact review git diff snapshots (full patch up to 24 KB or `--stat` summary above cap), and workspace snapshots for `handoff_plan` are preloaded once before fanning out to child models, eliminating 2–4 redundant initial read/git round-trips per engine.
+- **Task-Contract Prompting (`buildDelegationPrompt`, `rules/AGENTS.md`, `skills/handoff-delegate/SKILL.md`)**: Automatically wraps fresh `handoff_delegate` runs with concise, non-persona execution contracts tailored to `taskType` (`debugging`, `implementation`, `architecture`, `review`, `general`), explicit mode boundaries, evidence grounding, and deliverable checklists, alongside sharper review output contracts.
+- **Live Streaming Progress & Silent-Run Heartbeats (`src/events.mjs`, `src/mcp-server.mjs`)**: Throttled streaming progress events for `agy` `agent_response` deltas plus 15-second foreground heartbeats (`Still running (... elapsed)`) during long reasoning turns without polluting `executionEvidence`.
+- **Child Session Controls (`src/runners/codex.mjs`, `src/runners/claude.mjs`, `src/runners/agy.mjs`, `src/plan.mjs`)**:
+  - Explicit required JSON schema keys, concise output budgets, and local-first exploration rules in `handoff_plan` prompts to prevent multi-minute schema validation retry loops.
+  - Codex web search disabled by default in `handoff_plan` (opt-in via `allowWebSearch: true`) and `handoff_cross_review` via `-c web_search="disabled"`.
+  - Claude Code child runs pass `--disable-slash-commands` and a read-only `--append-system-prompt` Bash boundary guard to prevent wasted permission-denied turns.
+  - Forward `--print-timeout <sec>s` to `agy` CLI when `timeoutSec` is specified.
 
 ### Fixed
-
+- **Nested MCP Recursion & Orphan Process Prevention (`src/runners/common.mjs`, `src/runners/agy.mjs`, `src/jobs.mjs`, `src/mcp-server.mjs`)**: Pass `AGY_HANDOFF_NESTED=1` to child `agy` runs so nested `mcp-server.mjs` exposes empty tools (`[]`) and rejects recursive calls; register managed `exit`/`SIGINT`/`SIGTERM`/`SIGHUP` cleanup hooks for detached foreground child process trees.
 - AGY reviews and plans select `--mode plan`. Workspace-write calls select `accept-edits` and return quota failures on the first attempt.
 - Foreground AGY runs read the final result independently of the displayed log size. A stream that ends before a terminal result marks the run as failed.
 - Configuring a Codex or Claude binary path preserves independent AGY discovery for reviews and planning.

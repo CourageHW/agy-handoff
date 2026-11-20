@@ -6,7 +6,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
+  buildDelegationPrompt,
   captureGitDirtySnapshot,
+  capturePlanWorkspaceSnapshot,
+  captureReviewDiffSnapshot,
   computeGitDelta,
   createExecutionEvidenceTracker,
   normalizeAndFormatContext,
@@ -89,6 +92,83 @@ test("normalizeAndFormatContext validates fields, workspace containment, and for
       () => normalizeAndFormatContext({ summary: "x".repeat(5000) }, dir),
       /exceeds/i,
     );
+
+    // Pre-inlining skips sensitive/binary/oversized files while inlining small text files cleanly
+    fs.writeFileSync(path.join(dir, ".env"), "SECRET=123\n", "utf8");
+    fs.writeFileSync(path.join(dir, "big.txt"), "A".repeat(4000), "utf8");
+    fs.writeFileSync(path.join(dir, "bin.dat"), Buffer.from([0x00, 0x01, 0x02]));
+    const inlined = normalizeAndFormatContext(
+      { files: ["app.mjs", ".env", "big.txt", "bin.dat"] },
+      dir,
+      { inlineFiles: true, maxInlineFileBytes: 1024, maxTotalInlineBytes: 2048 },
+    );
+    assert.deepEqual(inlined.metadata.inlinedFiles, ["app.mjs"]);
+    assert.match(inlined.promptPrefix, /### Preloaded Scoped File Contents/);
+    assert.match(inlined.promptPrefix, /console\.log\('hi'\);/);
+    assert.doesNotMatch(inlined.promptPrefix, /SECRET=123/);
+    assert.match(inlined.promptPrefix, /sensitive path/i);
+    assert.match(inlined.promptPrefix, /read directly from disk/i);
+  } finally {
+    fs.rmSync(dir, RM_OPTS);
+  }
+});
+
+test("captureReviewDiffSnapshot and capturePlanWorkspaceSnapshot preload compact git/workspace context", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-snap-test-"));
+  try {
+    spawnSync("git", ["init"], { cwd: dir });
+    spawnSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+    spawnSync("git", ["config", "user.name", "Test"], { cwd: dir });
+    fs.writeFileSync(path.join(dir, "hello.mjs"), "export const v = 1;\n", "utf8");
+    spawnSync("git", ["add", "hello.mjs"], { cwd: dir });
+    spawnSync("git", ["commit", "-m", "init"], { cwd: dir });
+
+    fs.writeFileSync(path.join(dir, "hello.mjs"), "export const v = 2;\n", "utf8");
+
+    const fullSnap = await captureReviewDiffSnapshot({ cwd: dir, scope: "uncommitted" });
+    assert.match(fullSnap, /## Preloaded Git Diff Snapshot/);
+    assert.match(fullSnap, /### Full Patch/);
+    assert.match(fullSnap, /\+export const v = 2;/);
+
+    const statOnlySnap = await captureReviewDiffSnapshot({
+      cwd: dir,
+      scope: "uncommitted",
+      maxDiffBytes: 10,
+    });
+    assert.match(statOnlySnap, /### Diff Summary/);
+    assert.doesNotMatch(statOnlySnap, /### Full Patch/);
+
+    const planSnap = await capturePlanWorkspaceSnapshot(dir);
+    assert.match(planSnap, /## Preloaded Workspace Snapshot/);
+    assert.match(planSnap, /`hello\.mjs`/);
+    assert.match(planSnap, /Node\.js v/);
+
+    const debugPrompt = buildDelegationPrompt({
+      prompt: "Find why retry fails",
+      taskType: "debugging",
+      mode: "read-only",
+      promptPrefix: "## Handoff Context\n\n---\n\n",
+    });
+    assert.match(debugPrompt, /## Execution Contract \(taskType: debugging\)/);
+    assert.match(debugPrompt, /Mode: READ-ONLY/);
+    assert.match(debugPrompt, /Root Cause:/);
+    assert.match(debugPrompt, /## Task\nFind why retry fails$/);
+    assert.doesNotMatch(debugPrompt, /You are an? /i);
+
+    const writePrompt = buildDelegationPrompt({
+      prompt: "Implement helper",
+      taskType: "implementation",
+      mode: "workspace-write",
+    });
+    assert.match(writePrompt, /Mode: WORKSPACE-WRITE/);
+    assert.match(writePrompt, /Scoped Changes:/);
+
+    const resumedPrompt = buildDelegationPrompt({
+      prompt: "Continue step 2",
+      taskType: "debugging",
+      isResume: true,
+    });
+    assert.equal(resumedPrompt, "Continue step 2");
   } finally {
     fs.rmSync(dir, RM_OPTS);
   }

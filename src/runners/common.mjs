@@ -811,9 +811,8 @@ export function buildAdversarialReviewPrompt({ targetDescription, extraInstructi
   const parts = [
     "Perform a strict, adversarial code review.",
     "Challenge assumptions, architecture, edge cases, failure modes, concurrency/race conditions, security risks, and subtle regressions.",
-    "Ground findings in the repository diff and local files; avoid redundant external web searches or broad unrelated repo sweeps.",
-    "Report concrete findings ordered by severity (Critical, High, Medium, Low) with exact file paths, line references where possible, impact, and minimal actionable fixes.",
-    "Do not pad with generic praise. If no material defects exist, state that explicitly and note any residual risk or untested paths.",
+    "Evidence & Scope Contract: Ground every finding in the repository diff and local files (never fabricate paths, lines, or APIs); use preloaded diff/files first and avoid redundant external web searches or unrelated repo sweeps.",
+    "Output Contract: Order concrete findings by severity (Critical, High, Medium, Low). For each finding include exact `file:line`, concrete failure trigger/impact, and minimal actionable fix. Skip style nitpicks and generic praise; if no material defects exist, state so explicitly and list residual risks or untested paths.",
   ];
   if (targetDescription) {
     parts.push(`Review target: ${targetDescription}`);
@@ -828,8 +827,8 @@ export function buildStandardReviewPrompt({ targetDescription, extraInstructions
   const parts = [
     "Perform a thorough, read-only code review.",
     "Identify bugs, logic errors, missing error handling, API misuse, performance issues, and test gaps.",
-    "Ground findings in the repository diff and local files; avoid redundant external web searches or broad unrelated repo sweeps.",
-    "Group findings by severity with file references and concrete remediation suggestions.",
+    "Evidence & Scope Contract: Ground every finding in the repository diff and local files (never fabricate paths, lines, or APIs); use preloaded diff/files first and avoid redundant external web searches or unrelated repo sweeps.",
+    "Output Contract: Group concrete findings by severity (Critical, High, Medium, Low) with exact `file:line`, impact, and minimal actionable fix. Omit generic summaries or filler; if no defects exist, state so explicitly and note untested paths.",
   ];
   if (targetDescription) {
     parts.push(`Review target: ${targetDescription}`);

@@ -46,6 +46,9 @@ const ALLOWED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
 const READ_ONLY_AVAILABLE_TOOLS = "Read,Grep,Glob,Bash";
 
+const READ_ONLY_SYSTEM_PROMPT =
+  "Read-only mode: Bash is restricted strictly to read-only git inspection commands (git status, git diff, git log, git show). Do not invoke npm, curl, ls, cat, or other shell commands; use Read, Grep, and Glob for file inspection instead.";
+
 const READ_ONLY_TOOLS = [
   "Read",
   "Grep",
@@ -241,6 +244,7 @@ export function buildClaudeExecSpec({
     "--output-format",
     "stream-json",
     "--verbose",
+    "--disable-slash-commands",
     "--permission-prompts",
     "none",
   ];
@@ -256,6 +260,8 @@ export function buildClaudeExecSpec({
       READ_ONLY_TOOLS,
       "--disallowedTools",
       READ_ONLY_DISALLOWED_TOOLS,
+      "--append-system-prompt",
+      READ_ONLY_SYSTEM_PROMPT,
     );
   } else {
     args.push(

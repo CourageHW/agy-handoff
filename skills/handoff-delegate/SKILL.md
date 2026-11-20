@@ -21,10 +21,13 @@ Delegate focused tasks to local `codex` or `claude` CLIs safely and manage async
 
 ## Procedure
 
-1. **Scope the handoff prompt & context**:
-   - State the concrete objective, reproduction command (if debugging), and acceptance criteria.
-   - Pass `cwd` plus structured `context: { files, summary, constraints, acceptanceCriteria }` when relevant paths or prior findings are already known, avoiding redundant codebase re-exploration.
-   - Pass `engine: "auto"` (with optional `taskType: "debugging" | "implementation" | "architecture" | "general"`) only when policy-based automatic routing is desired.
+1. **Write a concrete task contract (no persona fluff)**:
+   - Skip role-play intros (*"You are an expert..."*). State clearly:
+     - **Objective & Scope**: exact bug, module, or deliverable and what NOT to touch.
+     - **Expected Output**: e.g., root cause with `file:line` + minimal patch, interface design + failure modes, or exact test command + fix.
+     - **Constraints & Verification**: permission boundary, compatibility/security constraints, and reproduction/test command(s).
+   - Always pass `cwd`, `taskType` (`"debugging" | "implementation" | "architecture" | "review" | "general"`), and structured `context: { files, summary, constraints, acceptanceCriteria }` so `agy-handoff` attaches the matching execution contract and preloads small scoped files automatically.
+   - Pass `engine: "auto"` only when policy-based automatic routing is desired.
 
 2. **Execute via MCP or dedicated subagent pane**:
    - Use `invoke_subagent` with `codex-handoff` or `claude-handoff` (passing `Role: "<model> <effort> delegate"` after checking `handoff_config({ action: "get" })` if omitted) when you want a dedicated `/agents` (`Alt+J`) pane streaming live progress, OR call `handoff_delegate` with `{ engine, taskType, prompt, context, mode, cwd, model, effort, sessionId, background, timeoutSec }`.

@@ -3,7 +3,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { execFile } from "node:child_process";
 import { compactText } from "./events.mjs";
-import { isInsideGitRepo, validateCwd } from "./runners/common.mjs";
+import { isInsideGitRepo, validateCwd, validateGitRef } from "./runners/common.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -11,9 +11,65 @@ export const MAX_CONTEXT_FILES = 30;
 export const MAX_CONTEXT_SUMMARY_CHARS = 4000;
 export const MAX_CONTEXT_ITEMS = 20;
 export const MAX_CONTEXT_ITEM_CHARS = 500;
+export const MAX_INLINE_FILE_BYTES = 24 * 1024; // 24 KB per file
+export const MAX_TOTAL_INLINE_BYTES = 36 * 1024; // 36 KB total across inlined files
+export const MAX_INLINE_DIFF_BYTES = 24 * 1024; // 24 KB full diff cap
+const MAX_INLINE_STAT_BYTES = 4 * 1024;
 
 const CONTROL_CHAR_RE = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const LINE_BREAK_OR_CONTROL_RE = /[\r\n\x00-\x1f\x7f]/;
+const SENSITIVE_BASENAME_RE =
+  /^(?:\.env(?:\..+)?|auth\.json|id_rsa(?:\..*)?|id_ed25519(?:\..*)?|.*\.(?:pem|key|p12|pfx|jks)|.*(?:secret|credential|token).*)$/i;
+
+function makeSafeFence(text) {
+  const matches = String(text || "").match(/`{3,}/g);
+  const maxRun = matches ? Math.max(...matches.map((m) => m.length)) : 2;
+  return "`".repeat(Math.max(3, maxRun + 1));
+}
+
+function isSensitiveFilePath(displayPath) {
+  const parts = String(displayPath || "").split(/[\\/]+/);
+  return parts.some((part) => part && SENSITIVE_BASENAME_RE.test(part));
+}
+
+function readSmallTextFile(absPath, maxBytes) {
+  let fd;
+  try {
+    fd = fs.openSync(absPath, "r");
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) {
+      return { ok: false, reason: "not_a_file", size: stat.size };
+    }
+    if (stat.size > maxBytes) {
+      return { ok: false, reason: "too_large", size: stat.size };
+    }
+    const buf = Buffer.allocUnsafe(stat.size);
+    let offset = 0;
+    while (offset < stat.size) {
+      const read = fs.readSync(fd, buf, offset, stat.size - offset, offset);
+      if (read === 0) break;
+      offset += read;
+    }
+    const slice = buf.subarray(0, offset);
+    const probeLen = Math.min(slice.length, 8192);
+    for (let i = 0; i < probeLen; i += 1) {
+      if (slice[i] === 0) {
+        return { ok: false, reason: "binary", size: stat.size };
+      }
+    }
+    return { ok: true, text: slice.toString("utf8"), size: slice.length };
+  } catch {
+    return { ok: false, reason: "unreadable", size: 0 };
+  } finally {
+    if (fd !== undefined) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -57,7 +113,15 @@ function isWithinDirectory(rootDir, targetPath) {
   );
 }
 
-export function normalizeAndFormatContext(context, cwd) {
+export function normalizeAndFormatContext(
+  context,
+  cwd,
+  {
+    inlineFiles = false,
+    maxInlineFileBytes = MAX_INLINE_FILE_BYTES,
+    maxTotalInlineBytes = MAX_TOTAL_INLINE_BYTES,
+  } = {},
+) {
   if (context === undefined || context === null) {
     return { promptPrefix: "", metadata: null };
   }
@@ -140,7 +204,39 @@ export function normalizeAndFormatContext(context, cwd) {
     if (!exists) {
       missingFiles.push(displayPath);
     }
-    fileEntries.push({ path: displayPath, exists });
+    fileEntries.push({ path: displayPath, abs, exists });
+  }
+
+  const inlinedBlocks = [];
+  const inlinedFiles = [];
+  let totalInlinedBytes = 0;
+  if (inlineFiles && fileEntries.length > 0 && maxTotalInlineBytes > 0) {
+    for (const entry of fileEntries) {
+      if (!entry.exists) continue;
+      if (isSensitiveFilePath(entry.path)) {
+        entry.inlineNote = "sensitive path — skipped inline";
+        continue;
+      }
+      const remaining = maxTotalInlineBytes - totalInlinedBytes;
+      if (remaining <= 0) {
+        entry.inlineNote = "inline budget reached — read from disk if needed";
+        continue;
+      }
+      const perFileCap = Math.min(maxInlineFileBytes, remaining);
+      const readRes = readSmallTextFile(entry.abs, perFileCap);
+      if (readRes.ok) {
+        totalInlinedBytes += readRes.size;
+        inlinedFiles.push(entry.path);
+        entry.inlined = true;
+        const fence = makeSafeFence(readRes.text);
+        inlinedBlocks.push(
+          `#### \`${entry.path}\` (${readRes.size} bytes)\n${fence}\n${readRes.text}\n${fence}`,
+        );
+      } else if (readRes.reason === "too_large") {
+        const kb = Math.max(1, Math.round(readRes.size / 1024));
+        entry.inlineNote = `${kb} KB — read directly from disk`;
+      }
+    }
   }
 
   const metadata = {
@@ -149,6 +245,7 @@ export function normalizeAndFormatContext(context, cwd) {
     hasSummary: Boolean(summary),
     constraintsCount: constraints.length,
     acceptanceCriteriaCount: acceptanceCriteria.length,
+    ...(inlineFiles ? { inlinedFiles } : {}),
   };
 
   if (
@@ -166,10 +263,19 @@ export function normalizeAndFormatContext(context, cwd) {
   ];
 
   if (fileEntries.length > 0) {
-    const fileLines = fileEntries.map(
-      (f) => `- \`${f.path}\` (${f.exists ? "exists" : "missing on disk"})`,
-    );
+    const fileLines = fileEntries.map((f) => {
+      if (!f.exists) return `- \`${f.path}\` (missing on disk)`;
+      if (f.inlined) return `- \`${f.path}\` (exists, preloaded below)`;
+      if (f.inlineNote) return `- \`${f.path}\` (exists, ${f.inlineNote})`;
+      return `- \`${f.path}\` (exists)`;
+    });
     sections.push(`### Scoped Files\n${fileLines.join("\n")}`);
+  }
+
+  if (inlinedBlocks.length > 0) {
+    sections.push(
+      `### Preloaded Scoped File Contents\nThese scoped files were preloaded once to save initial read turns; only call Read again if you need other files.\n\n${inlinedBlocks.join("\n\n")}`,
+    );
   }
 
   if (summary) {
@@ -192,6 +298,226 @@ export function normalizeAndFormatContext(context, cwd) {
     promptPrefix: `${sections.join("\n\n")}\n\n---\n\n`,
     metadata,
   };
+}
+
+async function runGitReadOnly(cwd, args, maxBuffer = 2 * 1024 * 1024) {
+  const res = await execFileAsync(
+    "git",
+    ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.quotepath=false", ...args],
+    {
+      cwd,
+      encoding: "utf8",
+      timeout: 5000,
+      maxBuffer,
+    },
+  );
+  return res.stdout || "";
+}
+
+export async function captureReviewDiffSnapshot({
+  cwd,
+  scope = "uncommitted",
+  base,
+  commit,
+  maxDiffBytes = MAX_INLINE_DIFF_BYTES,
+} = {}) {
+  if (!cwd || scope === "custom" || !isInsideGitRepo(cwd)) {
+    return "";
+  }
+  const resolvedCwd = validateCwd(cwd);
+  try {
+    let headerLabel = "";
+    let statusText = "";
+    let statText = "";
+    let diffText = "";
+
+    if (scope === "uncommitted") {
+      headerLabel = "Uncommitted Working Tree Changes";
+      statusText = (await runGitReadOnly(resolvedCwd, ["status", "--short"])).trim();
+      try {
+        statText = (await runGitReadOnly(resolvedCwd, ["diff", "--stat", "HEAD"])).trim();
+        diffText = await runGitReadOnly(resolvedCwd, ["diff", "HEAD"]);
+      } catch {
+        // Unborn HEAD (initial commit not yet made)
+        const [unstaged, staged] = await Promise.all([
+          runGitReadOnly(resolvedCwd, ["diff"]).catch(() => ""),
+          runGitReadOnly(resolvedCwd, ["diff", "--cached"]).catch(() => ""),
+        ]);
+        diffText = [staged, unstaged].filter(Boolean).join("\n");
+      }
+    } else if (scope === "base") {
+      const safeBase = validateGitRef("base", base);
+      headerLabel = `Diff Against Base \`${safeBase}\``;
+      statText = (
+        await runGitReadOnly(resolvedCwd, ["diff", "--stat", `${safeBase}...HEAD`])
+      ).trim();
+      diffText = await runGitReadOnly(resolvedCwd, ["diff", `${safeBase}...HEAD`]);
+    } else if (scope === "commit") {
+      const safeCommit = validateGitRef("commit", commit);
+      headerLabel = `Commit \`${safeCommit}\``;
+      statText = (
+        await runGitReadOnly(resolvedCwd, [
+          "show",
+          "--stat",
+          "--format=medium",
+          "--no-patch",
+          safeCommit,
+        ])
+      ).trim();
+      diffText = await runGitReadOnly(resolvedCwd, ["show", "--format=medium", safeCommit]);
+    } else {
+      return "";
+    }
+
+    const trimmedDiff = diffText.trim();
+    if (!statusText && !statText && !trimmedDiff) {
+      return "";
+    }
+
+    const parts = [
+      `## Preloaded Git Diff Snapshot (${headerLabel})`,
+      "Captured once before dispatching reviewers so you can inspect changes immediately without repeating initial `git status`/`git diff` commands. Use `Read`/`Grep` if you need surrounding file context.",
+    ];
+
+    if (statusText) {
+      const clippedStatus =
+        Buffer.byteLength(statusText, "utf8") > MAX_INLINE_STAT_BYTES
+          ? `${statusText.slice(0, MAX_INLINE_STAT_BYTES)}\n... [truncated]`
+          : statusText;
+      const fence = makeSafeFence(clippedStatus);
+      parts.push(`### Git Status\n${fence}\n${clippedStatus}\n${fence}`);
+    }
+
+    const diffBytes = Buffer.byteLength(trimmedDiff, "utf8");
+    if (trimmedDiff && diffBytes <= maxDiffBytes) {
+      const fence = makeSafeFence(trimmedDiff);
+      parts.push(`### Full Patch (${diffBytes} bytes)\n${fence}diff\n${trimmedDiff}\n${fence}`);
+    } else if (statText) {
+      const clippedStat =
+        Buffer.byteLength(statText, "utf8") > MAX_INLINE_STAT_BYTES
+          ? `${statText.slice(0, MAX_INLINE_STAT_BYTES)}\n... [truncated]`
+          : statText;
+      const fence = makeSafeFence(clippedStat);
+      const kb = Math.max(1, Math.round(diffBytes / 1024));
+      parts.push(
+        `### Diff Summary (full patch is ${kb} KB > ${Math.round(maxDiffBytes / 1024)} KB inline cap; inspect target files directly)\n${fence}\n${clippedStat}\n${fence}`,
+      );
+    }
+
+    return `${parts.join("\n\n")}\n\n---\n\n`;
+  } catch {
+    return "";
+  }
+}
+
+export async function capturePlanWorkspaceSnapshot(cwd) {
+  if (!cwd) return "";
+  try {
+    const resolvedCwd = validateCwd(cwd);
+    const entries = fs
+      .readdirSync(resolvedCwd, { withFileTypes: true })
+      .filter((d) => d.name !== ".git" && d.name !== "node_modules")
+      .map((d) => (d.isDirectory() ? `${d.name}/` : d.name))
+      .sort();
+    const shownEntries = entries.slice(0, 30);
+    const extraCount = Math.max(0, entries.length - shownEntries.length);
+
+    let gitStatus = "";
+    if (isInsideGitRepo(resolvedCwd)) {
+      try {
+        const raw = (await runGitReadOnly(resolvedCwd, ["status", "--short"])).trim();
+        if (raw) {
+          const lines = raw.split(/\r?\n/);
+          gitStatus =
+            lines.length > 25
+              ? `${lines.slice(0, 25).join("\n")}\n... (+${lines.length - 25} more)`
+              : raw;
+        }
+      } catch {
+        // ignore git status errors
+      }
+    }
+
+    const lines = [
+      "## Preloaded Workspace Snapshot",
+      `- Runtime: Node.js ${process.version} (${process.platform})`,
+      `- Top-level entries: ${shownEntries.length > 0 ? shownEntries.map((e) => `\`${e}\``).join(", ") : "(empty)"}${extraCount > 0 ? ` (+${extraCount} more)` : ""}`,
+    ];
+    if (gitStatus) {
+      const fence = makeSafeFence(gitStatus);
+      lines.push(`- Git status:\n${fence}\n${gitStatus}\n${fence}`);
+    }
+    return `${lines.join("\n")}\n\n---\n\n`;
+  } catch {
+    return "";
+  }
+}
+
+const DELEGATION_DELIVERABLES = {
+  debugging: [
+    "Root Cause: exact `file:line` evidence distinguishing verified facts from hypotheses.",
+    "Minimal Fix: concrete patch or exact code change that resolves the root cause without unrelated edits.",
+    "Verification: exact reproduction and test command(s) plus edge cases to check.",
+  ],
+  implementation: [
+    "Scoped Changes: exact files created/modified (or proposed in read-only mode) with concrete function/type signatures.",
+    "Guards & Boundaries: edge-case handling while strictly respecting YAGNI and non-goals (no unrelated refactors).",
+    "Verification: exact test/build command(s) and observed results (workspace-write) or failing-first test cases (read-only).",
+  ],
+  architecture: [
+    "Design & Boundaries: concrete module ownership, interfaces, and data/control flow grounded in real repository paths.",
+    "Trade-Offs & Failure Modes: non-obvious concurrency, security, compatibility, or operational risks with mitigations.",
+    "Actionable Sequence: ordered, bite-sized implementation steps with concrete verification checks.",
+  ],
+  review: [
+    "Findings by Severity: Critical, High, Medium, Low — each with exact `file:line`, concrete failure trigger/impact, and minimal fix.",
+    "Residual Risks: untested paths or assumptions (if no material defects exist, state so explicitly).",
+  ],
+  general: [
+    "Direct Deliverable: concrete answer, diagnosis, or proposal grounded in exact local `file:line` references.",
+    "Constraints & Verification: explicit assumptions, residual risks, and exact command(s) to verify.",
+  ],
+};
+
+export function buildDelegationPrompt({
+  prompt,
+  taskType = "general",
+  mode = "read-only",
+  promptPrefix = "",
+  isResume = false,
+} = {}) {
+  const cleanPrompt = String(prompt || "").trim();
+  const prefix = String(promptPrefix || "");
+  if (isResume) {
+    return `${prefix}${cleanPrompt}`;
+  }
+
+  const normalizedType = Object.prototype.hasOwnProperty.call(
+    DELEGATION_DELIVERABLES,
+    taskType,
+  )
+    ? taskType
+    : "general";
+  const deliverables = DELEGATION_DELIVERABLES[normalizedType];
+  const modeDirective =
+    mode === "workspace-write"
+      ? "Mode: WORKSPACE-WRITE — apply minimal, strictly scoped edits directly to the target files and run relevant verification command(s)."
+      : "Mode: READ-ONLY — inspect files and return concrete findings/patches without creating, editing, or deleting workspace files.";
+
+  const contractBlock = [
+    `## Execution Contract (taskType: ${normalizedType})`,
+    modeDirective,
+    "",
+    "### Expected Deliverable",
+    ...deliverables.map((item, idx) => `${idx + 1}. ${item}`),
+    "",
+    "### Operating Constraints",
+    "- Ground every claim in actual workspace files or observed command output; never invent file paths, line numbers, APIs, or test results.",
+    "- Start from any preloaded context/scoped files above; avoid broad unrelated repo sweeps or repetitive external web searches unless required.",
+    "- Be concise and high-signal: omit generic filler/praise and clearly separate verified facts from unverified assumptions.",
+  ].join("\n");
+
+  return `${prefix}${contractBlock}\n\n## Task\n${cleanPrompt}`;
 }
 
 export async function captureGitDirtySnapshot(cwd) {

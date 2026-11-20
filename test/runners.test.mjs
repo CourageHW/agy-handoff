@@ -212,11 +212,15 @@ test("buildClaudeExecSpec enforces restricted read-only mode, stream-json, and d
   assert.ok(spec.args.includes("--output-format"));
   assert.ok(spec.args.includes("stream-json"));
   assert.ok(spec.args.includes("--verbose"));
+  assert.ok(spec.args.includes("--disable-slash-commands"));
   assert.ok(spec.args.includes("--permission-prompts"));
   assert.ok(spec.args.includes("none"));
   assert.ok(spec.args.includes("dontAsk"));
   assert.ok(spec.args.includes("--restricted"));
   assert.ok(spec.args.includes("--strict-mcp-config"));
+  const appendIdx = spec.args.indexOf("--append-system-prompt");
+  assert.notEqual(appendIdx, -1);
+  assert.match(spec.args[appendIdx + 1], /Bash is restricted strictly to read-only git/i);
   assert.ok(spec.args.includes("--model"));
   assert.ok(spec.args.includes("sonnet"));
   assert.ok(spec.args.includes("--effort"));

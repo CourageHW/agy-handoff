@@ -10,7 +10,10 @@ import {
   updateConfig,
 } from "./config.mjs";
 import {
+  buildDelegationPrompt,
   captureGitDirtySnapshot,
+  capturePlanWorkspaceSnapshot,
+  captureReviewDiffSnapshot,
   computeGitDelta,
   createExecutionEvidenceTracker,
   normalizeAndFormatContext,
@@ -61,7 +64,7 @@ import {
 
 const SERVER_INFO = {
   name: "agy-handoff",
-  version: "0.2.0",
+  version: "0.2.1",
 };
 
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-03-26", "2024-11-05"];
@@ -1012,8 +1015,10 @@ export async function handleToolCall(
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
       const scope = args.scope || "uncommitted";
       const resolvedCwd = validateCwd(args.cwd);
-      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
-      const effectivePrompt = args.prompt
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd, {
+        inlineFiles: true,
+      });
+      const basePrompt = args.prompt
         ? `${ctx.promptPrefix}${args.prompt}`
         : ctx.promptPrefix.trim() || undefined;
       const skipGitRepoCheck =
@@ -1038,6 +1043,24 @@ export async function handleToolCall(
         model: args.model,
         effort: args.effort,
       });
+      const usesCodexNative =
+        selectedEngine === "codex" &&
+        (args.style || "standard") === "standard" &&
+        !basePrompt &&
+        !args.structured &&
+        (scope === "uncommitted" || scope === "base" || scope === "commit");
+      const diffSnapshot = usesCodexNative
+        ? ""
+        : await captureReviewDiffSnapshot({
+            cwd: resolvedCwd,
+            scope,
+            base: args.base,
+            commit: args.commit,
+          });
+      const effectivePrompt =
+        diffSnapshot || basePrompt
+          ? `${diffSnapshot}${basePrompt || ""}`.trim() || undefined
+          : undefined;
       const effectiveArgs = {
         ...args,
         engine: selectedEngine,
@@ -1084,13 +1107,6 @@ export async function handleToolCall(
           ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
         };
       }
-
-      const usesCodexNative =
-        selectedEngine === "codex" &&
-        (args.style || "standard") === "standard" &&
-        !effectivePrompt &&
-        !args.structured &&
-        (scope === "uncommitted" || scope === "base" || scope === "commit");
 
       const result = await runTrackedForeground(
         jobManager,
@@ -1146,8 +1162,16 @@ export async function handleToolCall(
         mode === "workspace-write"
           ? validateWorkspaceWriteCwd(args.cwd)
           : validateCwd(args.cwd);
-      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
-      const effectivePrompt = `${ctx.promptPrefix}${args.prompt}`;
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd, {
+        inlineFiles: true,
+      });
+      const effectivePrompt = buildDelegationPrompt({
+        prompt: args.prompt,
+        taskType: args.taskType || "general",
+        mode,
+        promptPrefix: ctx.promptPrefix,
+        isResume: Boolean(args.sessionId),
+      });
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
 
@@ -1297,10 +1321,22 @@ export async function handleToolCall(
       const style = args.style || "adversarial";
       const scope = args.scope || "uncommitted";
       const resolvedCwd = validateCwd(args.cwd);
-      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
-      const effectivePrompt = args.prompt
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd, {
+        inlineFiles: true,
+      });
+      const diffSnapshot = await captureReviewDiffSnapshot({
+        cwd: resolvedCwd,
+        scope,
+        base: args.base,
+        commit: args.commit,
+      });
+      const basePrompt = args.prompt
         ? `${ctx.promptPrefix}${args.prompt}`
         : ctx.promptPrefix.trim() || undefined;
+      const effectivePrompt =
+        diffSnapshot || basePrompt
+          ? `${diffSnapshot}${basePrompt || ""}`.trim() || undefined
+          : undefined;
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? (scope === "custom" ? !isInsideGitRepo(resolvedCwd) : false);
       const structured = Boolean(args.structured);
@@ -1726,7 +1762,10 @@ export async function handleToolCall(
       const phase = args.phase || "design";
       const structured = args.structured !== false;
       const resolvedCwd = validateCwd(args.cwd);
-      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd, {
+        inlineFiles: true,
+      });
+      const workspaceSnapshot = await capturePlanWorkspaceSnapshot(resolvedCwd);
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
 
@@ -1738,7 +1777,7 @@ export async function handleToolCall(
         nonGoals: args.nonGoals,
         constraints: args.constraints,
         acceptanceCriteria: args.acceptanceCriteria,
-        promptPrefix: ctx.promptPrefix,
+        promptPrefix: `${workspaceSnapshot}${ctx.promptPrefix}`,
         structured,
       });
 
