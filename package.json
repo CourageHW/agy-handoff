@@ -28,7 +28,6 @@
     "plugin.json",
     "mcp_config.json",
     "README.md",
-    "README.ko.md",
     "LICENSE"
   ],
   "scripts": {
