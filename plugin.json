@@ -1,0 +1,16 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "agy-handoff",
+  "displayName": "agy-handoff",
+  "version": "0.1.0",
+  "author": "yonggi.hw",
+  "homepage": "https://github.com/CourageHW/agy-handoff",
+  "repository": "https://github.com/CourageHW/agy-handoff",
+  "logo": "assets/logo.svg",
+  "description": "Hand off code reviews, debugging, and parallel second-opinion checks from Antigravity to local Codex and Claude Code CLIs.",
+  "suggestedPrompts": [
+    "Check whether Codex and Claude Code CLIs are ready via handoff doctor",
+    "Get a cross-review from both Codex and Claude Code on the current diff",
+    "Configure default Codex and Claude models per command via /agy-handoff:handoff-models"
+  ]
+}

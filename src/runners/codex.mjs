@@ -1,0 +1,386 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import crypto from "node:crypto";
+import {
+  DEFAULT_TIMEOUT_MS,
+  VALID_REVIEW_SCOPES,
+  VALID_REVIEW_STYLES,
+  buildAdversarialReviewPrompt,
+  buildStandardReviewPrompt,
+  findBinary,
+  getBinaryVersion,
+  inspectBinary,
+  isInsideGitRepo,
+  runCommand,
+  truncateOutput,
+  validateCwd,
+  validateGitRef,
+  validateModelFlag,
+  validateSessionId,
+  validateTimeoutSec,
+} from "./common.mjs";
+import { createEventStreamParser, parseCodexJsonlOutput } from "../events.mjs";
+
+const ALLOWED_SANDBOX_MODES = new Set(["read-only", "workspace-write"]);
+const ALLOWED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
+
+function validateCodexEffort(effort) {
+  if (effort !== undefined && effort !== null && !ALLOWED_EFFORTS.has(effort)) {
+    throw new Error(
+      `Unsupported effort "${effort}". Allowed: low, medium, high, xhigh, max, ultra.`,
+    );
+  }
+}
+
+export function extractCodexSessionId(text) {
+  if (!text) return null;
+  const match = String(text).match(/^session id:\s*([A-Za-z0-9._:-]+)$/im);
+  return match ? match[1] : null;
+}
+
+export function findCodexBinary() {
+  return findBinary("codex", "AGY_HANDOFF_CODEX_BIN");
+}
+
+export async function inspectCodex() {
+  const info = inspectBinary("codex", "AGY_HANDOFF_CODEX_BIN");
+  if (!info.installed) {
+    return {
+      engine: "codex",
+      installed: false,
+      accessible: false,
+      binary: null,
+      symlinkTarget: null,
+      version: null,
+      installHint: "npm install -g @openai/codex && codex login",
+    };
+  }
+  if (!info.accessible) {
+    return {
+      engine: "codex",
+      installed: true,
+      accessible: false,
+      binary: info.binary,
+      symlinkTarget: info.symlinkTarget,
+      version: null,
+      note: info.warning,
+    };
+  }
+  const version = await getBinaryVersion(info.binary, ["--version"]);
+  const authFile = path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
+    "auth.json",
+  );
+  const hasAuthHint =
+    Boolean(process.env.OPENAI_API_KEY) || fs.existsSync(authFile);
+  return {
+    engine: "codex",
+    installed: true,
+    accessible: true,
+    binary: info.binary,
+    symlinkTarget: info.symlinkTarget,
+    version,
+    authHint: hasAuthHint
+      ? "OPENAI_API_KEY or ~/.codex/auth.json detected"
+      : "No local auth hint detected (run `codex login` or set OPENAI_API_KEY)",
+  };
+}
+
+export function createTempOutputFile(prefix = "agy-handoff-codex", baseDir) {
+  if (baseDir) {
+    const id = crypto.randomBytes(6).toString("hex");
+    return path.join(baseDir, `${prefix}-${id}.txt`);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`));
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      // ignore chmod errors on restricted filesystems
+    }
+  }
+  return path.join(dir, "last-message.txt");
+}
+
+export function readAndCleanupOutputFile(filePath) {
+  if (!filePath) return "";
+  try {
+    if (fs.existsSync(filePath)) {
+      return fs.readFileSync(filePath, "utf8").trim();
+    }
+  } catch {
+    // ignore read failure and fall back to stdout
+  } finally {
+    try {
+      fs.rmSync(filePath, { force: true });
+      const parentDir = path.dirname(filePath);
+      if (path.basename(parentDir).startsWith("agy-handoff-codex")) {
+        fs.rmSync(parentDir, { recursive: true, force: true });
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return "";
+}
+
+export function buildCodexExecSpec({
+  prompt,
+  cwd,
+  mode = "read-only",
+  model,
+  effort,
+  sessionId,
+  skipGitRepoCheck = false,
+  ephemeral = true,
+  jsonStream = true,
+  outputFile,
+}) {
+  if (!prompt || !prompt.trim()) {
+    throw new Error("Prompt is required for Codex execution.");
+  }
+  if (!ALLOWED_SANDBOX_MODES.has(mode)) {
+    throw new Error(
+      `Unsupported mode "${mode}". Allowed: read-only, workspace-write.`,
+    );
+  }
+  validateCodexEffort(effort);
+  const validModel = validateModelFlag(model);
+  const validSessionId = validateSessionId(sessionId);
+  const resolvedCwd = validateCwd(cwd);
+
+  const args = ["exec"];
+  if (validSessionId) {
+    args.push("resume", "-c", `sandbox_mode=${JSON.stringify(mode)}`);
+    if (jsonStream) {
+      args.push("--json");
+    }
+    if (validModel) {
+      args.push("-m", validModel);
+    }
+    if (effort) {
+      args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
+    }
+    if (skipGitRepoCheck) {
+      args.push("--skip-git-repo-check");
+    }
+    if (outputFile) {
+      args.push("-o", outputFile);
+    }
+    if (validSessionId === "last") {
+      args.push("--last");
+    } else {
+      args.push(validSessionId);
+    }
+    args.push("-");
+    return {
+      args,
+      cwd: resolvedCwd,
+      stdin: prompt,
+      outputFile: outputFile || null,
+      jsonStream: Boolean(jsonStream),
+    };
+  }
+
+  args.push("--color", "never", "-C", resolvedCwd, "-s", mode);
+  if (jsonStream) {
+    args.push("--json");
+  }
+  if (ephemeral) {
+    args.push("--ephemeral");
+  }
+  if (validModel) {
+    args.push("-m", validModel);
+  }
+  if (effort) {
+    args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
+  }
+  if (skipGitRepoCheck) {
+    args.push("--skip-git-repo-check");
+  }
+  if (outputFile) {
+    args.push("-o", outputFile);
+  }
+
+  // Read prompt safely from stdin.
+  args.push("-");
+
+  return {
+    args,
+    cwd: resolvedCwd,
+    stdin: prompt,
+    outputFile: outputFile || null,
+    jsonStream: Boolean(jsonStream),
+  };
+}
+
+export function buildCodexReviewSpec({
+  cwd,
+  style = "standard",
+  scope = "uncommitted",
+  base,
+  commit,
+  prompt,
+  model,
+  effort,
+  skipGitRepoCheck,
+  jsonStream = true,
+  outputFile,
+}) {
+  if (!VALID_REVIEW_STYLES.has(style)) {
+    throw new Error(`Unsupported style "${style}". Allowed: standard, adversarial.`);
+  }
+  if (!VALID_REVIEW_SCOPES.has(scope)) {
+    throw new Error(
+      `Unsupported scope "${scope}". Allowed: uncommitted, base, commit, custom.`,
+    );
+  }
+  validateCodexEffort(effort);
+  const validModel = validateModelFlag(model);
+  const resolvedCwd = validateCwd(cwd);
+
+  const safeBase = scope === "base" ? validateGitRef("base", base) : undefined;
+  const safeCommit = scope === "commit" ? validateGitRef("commit", commit) : undefined;
+
+  // Use native `codex review` for standard git-scoped reviews without custom prompt overrides.
+  const canUseNativeReview =
+    style === "standard" &&
+    !prompt &&
+    (scope === "uncommitted" || scope === "base" || scope === "commit");
+
+  if (canUseNativeReview) {
+    const args = ["review", "-c", 'sandbox_mode="read-only"'];
+    if (validModel) {
+      args.push("-c", `model=${JSON.stringify(validModel)}`);
+    }
+    if (effort) {
+      args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
+    }
+    if (scope === "base") {
+      args.push("--base", safeBase);
+    } else if (scope === "commit") {
+      args.push("--commit", safeCommit);
+    } else {
+      args.push("--uncommitted");
+    }
+    return {
+      args,
+      cwd: resolvedCwd,
+      stdin: null,
+      outputFile: null,
+      jsonStream: false,
+    };
+  }
+
+  let targetDescription =
+    "Uncommitted changes in the repository (inspect via `git status` and `git diff`).";
+  if (scope === "base") {
+    targetDescription = `Changes compared against base branch \`${safeBase}\` (inspect via \`git diff ${safeBase}...HEAD\`).`;
+  } else if (scope === "commit") {
+    targetDescription = `Changes introduced by commit \`${safeCommit}\` (inspect via \`git show ${safeCommit}\`).`;
+  } else if (scope === "custom") {
+    targetDescription = "Files and scope specified in the additional focus below.";
+  }
+
+  const composedPrompt =
+    style === "adversarial"
+      ? buildAdversarialReviewPrompt({
+          targetDescription,
+          extraInstructions: prompt,
+        })
+      : buildStandardReviewPrompt({
+          targetDescription,
+          extraInstructions: prompt,
+        });
+
+  const resolvedSkipGitRepoCheck =
+    skipGitRepoCheck ?? (scope === "custom" ? !isInsideGitRepo(resolvedCwd) : false);
+
+  return buildCodexExecSpec({
+    prompt: composedPrompt,
+    cwd: resolvedCwd,
+    mode: "read-only",
+    model: validModel,
+    effort,
+    skipGitRepoCheck: resolvedSkipGitRepoCheck,
+    ephemeral: true,
+    jsonStream,
+    outputFile,
+  });
+}
+
+async function executeCodex(spec, options) {
+  const binary = findCodexBinary();
+  if (!binary) {
+    throw new Error(
+      "Codex CLI (`codex`) was not found in PATH. Install it with `npm install -g @openai/codex` and run `codex login`.",
+    );
+  }
+  const timeoutSec = validateTimeoutSec(options.timeoutSec);
+  const parser =
+    spec.jsonStream && typeof options.onEvent === "function"
+      ? createEventStreamParser("codex", options.onEvent)
+      : null;
+
+  const res = await runCommand({
+    command: binary,
+    args: spec.args,
+    cwd: spec.cwd,
+    stdin: spec.stdin,
+    timeoutMs: (timeoutSec || DEFAULT_TIMEOUT_MS / 1000) * 1000,
+    truncateStdout: !spec.jsonStream,
+    maxCaptureBytes: spec.jsonStream ? 4 * 1024 * 1024 : undefined,
+    signal: options.signal,
+    onStdoutChunk: parser ? (chunk) => parser.push(chunk) : undefined,
+  });
+
+  if (parser) {
+    parser.flush();
+  }
+
+  const lastMessage = readAndCleanupOutputFile(spec.outputFile);
+  const jsonl = spec.jsonStream
+    ? parseCodexJsonlOutput(res.stdout)
+    : { lastMessage: "", sessionId: null, error: null };
+
+  const rawOutput =
+    lastMessage ||
+    jsonl.lastMessage ||
+    (res.ok ? res.stdout : jsonl.error || res.stderr || res.stdout);
+  const output = truncateOutput(rawOutput || res.stderr);
+  const sessionId =
+    jsonl.sessionId || extractCodexSessionId(`${res.stderr}\n${res.stdout}`);
+
+  return {
+    engine: "codex",
+    ok: res.ok,
+    exitCode: res.exitCode,
+    timedOut: res.timedOut,
+    aborted: Boolean(res.aborted),
+    durationMs: res.durationMs,
+    sessionId,
+    output,
+    stderr: res.ok ? "" : res.stderr,
+  };
+}
+
+export async function runCodexExec(options) {
+  const resolvedCwd = validateCwd(options.cwd);
+  const skipGitRepoCheck = options.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
+  const ephemeral = options.ephemeral ?? false;
+  const outputFile = options.sessionId ? null : createTempOutputFile();
+  const spec = buildCodexExecSpec({
+    ...options,
+    skipGitRepoCheck,
+    ephemeral,
+    outputFile,
+  });
+  return executeCodex(spec, options);
+}
+
+export async function runCodexReview(options) {
+  const outputFile = createTempOutputFile("agy-handoff-codex-review");
+  const spec = buildCodexReviewSpec({ ...options, outputFile });
+  return executeCodex(spec, options);
+}

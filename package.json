@@ -1,0 +1,49 @@
+{
+  "name": "agy-handoff",
+  "version": "0.1.0",
+  "description": "Antigravity plugin to hand off code reviews, debugging, and second-opinion checks to local OpenAI Codex and Anthropic Claude Code CLIs.",
+  "type": "module",
+  "license": "MIT",
+  "author": "yonggi.hw",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/CourageHW/agy-handoff.git"
+  },
+  "homepage": "https://github.com/CourageHW/agy-handoff#readme",
+  "bugs": {
+    "url": "https://github.com/CourageHW/agy-handoff/issues"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "bin": {
+    "agy-handoff": "./src/cli.mjs"
+  },
+  "files": [
+    "src/",
+    "agents/",
+    "skills/",
+    "rules/",
+    "assets/",
+    "plugin.json",
+    "mcp_config.json",
+    "README.md",
+    "README.ko.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "mcp": "node ./src/mcp-server.mjs",
+    "doctor": "node ./src/cli.mjs doctor"
+  },
+  "keywords": [
+    "antigravity",
+    "antigravity-plugin",
+    "agy",
+    "mcp",
+    "codex",
+    "claude-code",
+    "code-review",
+    "handoff"
+  ]
+}
