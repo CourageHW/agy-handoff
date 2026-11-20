@@ -32,6 +32,7 @@ import { validateWorkspaceWriteCwd } from "../src/runners/common.mjs";
 import { buildCodexExecSpec } from "../src/runners/codex.mjs";
 import { buildClaudeExecSpec } from "../src/runners/claude.mjs";
 import { parseCodexJsonLine, parseClaudeStreamJsonLine } from "../src/events.mjs";
+import { DEFAULT_EXTERNAL_AGENTS, resolveHarness, selectGroupEngines } from "../src/harness.mjs";
 import { resolveAutoEngine } from "../src/routing.mjs";
 import { JobManager } from "../src/jobs.mjs";
 import { handleToolCall } from "../src/mcp-server.mjs";
@@ -1007,4 +1008,34 @@ test("handoff_plan & synthesizeCollaborativePlan: Grill-Me decisions, 3-to-1 pla
   } finally {
     fs.rmSync(dir, RM_OPTS);
   }
+});
+
+test("host routing applies preferences only to eligible external engines", async () => {
+  const ready = async () => ({ accessible: true, compatible: true });
+  for (const [host, candidates] of Object.entries(DEFAULT_EXTERNAL_AGENTS)) {
+    const defaultGroup = selectGroupEngines(resolveHarness(host));
+    assert.deepEqual(defaultGroup, candidates);
+    const ownEngine = host === "antigravity" ? "agy" : host;
+    const result = await resolveAutoEngine({
+      candidates,
+      inspectCodexFn: ready,
+      inspectClaudeFn: ready,
+      inspectAgyFn: ready,
+      config: { routing: { policy: `prefer-${ownEngine}` } },
+    });
+    assert.notEqual(result.selectedEngine, ownEngine);
+    assert.deepEqual(Object.keys(result.routingDecision.recentCounts), candidates);
+  }
+  const agy = await resolveAutoEngine({
+    mode: "workspace-write",
+    candidates: DEFAULT_EXTERNAL_AGENTS.codex,
+    inspectClaudeFn: ready,
+    inspectAgyFn: ready,
+  });
+  assert.equal(agy.selectedEngine, "agy");
+  assert.deepEqual(selectGroupEngines("codex", { engines: ["codex"] }), ["codex"]);
+  assert.throws(() => selectGroupEngines("codex", { engines: ["agy", "agy"] }), /unique/);
+  assert.throws(() => selectGroupEngines("codex", { engines: ["other"] }), /unique/);
+  assert.throws(() => selectGroupEngines("codex", { engines: ["codex"], includeAgy: false }), /either/);
+  assert.throws(() => resolveHarness("unknown"), /Invalid handoff host/);
 });

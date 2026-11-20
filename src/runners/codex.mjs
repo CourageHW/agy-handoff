@@ -17,6 +17,8 @@ import {
   isCliFlagCompatibilityError,
   isInsideGitRepo,
   parseSemver,
+  handoffChildArgs,
+  handoffChildEnv,
   runCommand,
   truncateOutput,
   validateCwd,
@@ -493,7 +495,8 @@ async function executeCodex(spec, options) {
 
   const res = await runCommand({
     command: binary,
-    args: spec.args,
+    env: handoffChildEnv("codex"),
+    args: handoffChildArgs("codex", spec.args),
     cwd: spec.cwd,
     stdin: spec.stdin,
     timeoutMs: (timeoutSec || DEFAULT_TIMEOUT_MS / 1000) * 1000,

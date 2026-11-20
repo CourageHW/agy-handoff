@@ -2,19 +2,20 @@
 name: handoff-delegate
 description: >-
   Use this skill when the user asks to delegate a debugging task, deep codebase
-  investigation, implementation draft, or background job to local Codex or
-  Claude Code CLI, or to inspect/cancel running handoff background jobs.
+  investigation, implementation draft, or background job to local Codex,
+  Claude Code or Antigravity CLI, or to inspect/cancel running handoff background jobs.
 ---
 
 # Handoff Delegate
 
-Delegate focused tasks to local `codex` or `claude` CLIs safely and manage asynchronous runs.
+Delegate focused tasks to local `codex`, `claude`, or `agy` CLIs safely and manage asynchronous runs.
 
 ## Safety First
 
 - Default to `mode: "read-only"` for investigation, root-cause analysis, test-failure triage, and patch proposals. Never silently escalate from `read-only` to `workspace-write`.
-- Only use `mode: "workspace-write"` when the user explicitly requests and confirms that Codex or Claude Code should directly edit files in the workspace.
+- Only use `mode: "workspace-write"` when the user explicitly requests and confirms that the external engine should edit files in the workspace.
 - Understand the engine sandbox difference before allowing writes:
+  - **Antigravity** runs with `--sandbox --mode accept-edits`.
   - **Codex** runs inside its OS sandbox (`-s workspace-write`).
   - **Claude Code** runs with `--permission-mode acceptEdits --restricted --strict-mcp-config --disallowedTools "Bash(sudo *),Bash(git push),Bash(git push *)"`, which confines built-in file tools (`Read`, `Edit`, `Write`, `Grep`, `Glob`) to `cwd`, but `Bash` itself has no OS filesystem/network sandbox.
 - Never run two `workspace-write` handoffs concurrently on the same files.
@@ -29,11 +30,11 @@ Delegate focused tasks to local `codex` or `claude` CLIs safely and manage async
    - Always pass `cwd`, `taskType` (`"debugging" | "implementation" | "architecture" | "review" | "general"`), and structured `context: { files, summary, constraints, acceptanceCriteria }` so `agy-handoff` attaches the matching execution contract and preloads small scoped files automatically.
    - Pass `engine: "auto"` only when policy-based automatic routing is desired.
 
-2. **Execute via MCP or dedicated subagent pane**:
-   - Use `invoke_subagent` with `codex-handoff` or `claude-handoff` (passing `Role: "<model> <effort> delegate"` after checking `handoff_config({ action: "get" })` if omitted) when you want a dedicated `/agents` (`Alt+J`) pane streaming live progress, OR call `handoff_delegate` with `{ engine, taskType, prompt, context, mode, cwd, model, effort, sessionId, background, timeoutSec }`.
+2. **Execute via MCP**:
+   - Call `handoff_delegate` with the requested engine (or `auto`), task type, prompt, context, mode, cwd, and optional model, effort, session ID, background, and timeout. For workspace-write, set `confirmWorkspaceWrite: true` only after the user explicitly approves external edits.
    - To continue a previous Claude Code or Codex session, pass its returned `sessionId` (or `"last"` for Codex).
    - CLI fallback (if MCP is unavailable):
-     `node <plugin-root>/src/cli.mjs delegate --engine <codex|claude|auto> --mode <read-only|workspace-write> --cwd <cwd> --files "<a,b>" --prompt "<task>"`
+     `node <plugin-root>/src/cli.mjs delegate --engine <codex|claude|agy|auto> --mode <read-only|workspace-write> --cwd <cwd> --files "<a,b>" --prompt "<task>"`
 
 3. **Manage, observe & safely recover jobs**:
    - Inspect live status & `recentEvents`: `handoff_job_status` (supports `waitSec` and `sinceSeq`, or `includeStats: true` when `jobId` is omitted)

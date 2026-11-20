@@ -371,8 +371,16 @@ async function main() {
       if (!res.ok || !res.routingDecision || !res.executionEvidence) {
         throw new Error("Missing routingDecision or executionEvidence");
       }
-      if (res.executionEvidence.observedToolCalls < 1) {
-        throw new Error("Expected observedToolCalls >= 1 during live inspection");
+      if (!res.handoffContext?.inlinedFiles?.includes("math.mjs")) {
+        throw new Error("Expected math.mjs to be preloaded in the handoff context");
+      }
+      const { observedToolCalls, warnings } = res.executionEvidence;
+      if (!Number.isInteger(observedToolCalls) || observedToolCalls < 0) {
+        throw new Error("Expected a nonnegative observed tool call count");
+      }
+      if (observedToolCalls === 0 &&
+          !warnings.some((warning) => warning.includes("No successful file reads"))) {
+        throw new Error("Expected an evidence warning when reviewing preloaded code without tools");
       }
       const statsTable = spawnSync(
         process.execPath,

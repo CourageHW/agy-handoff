@@ -15,6 +15,7 @@ import {
   inspectBinary,
   isCliFlagCompatibilityError,
   parseSemver,
+  handoffChildEnv,
   runCommand,
   truncateOutput,
   validateCwd,
@@ -543,6 +544,7 @@ async function executeClaude(spec, options) {
 
   const res = await runCommand({
     command: binary,
+    env: handoffChildEnv("claude"),
     args: spec.args,
     cwd: spec.cwd,
     stdin: spec.stdin,

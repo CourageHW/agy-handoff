@@ -1,0 +1,8 @@
+{
+  "name": "handoff-bridge",
+  "description": "Review, plan, and delegate to local Codex and Antigravity from Claude Code.",
+  "repository": "https://github.com/CourageHW/agy-handoff",
+  "author": {
+    "name": "yonggi.hw"
+  }
+}

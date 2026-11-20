@@ -2,6 +2,12 @@
 
 All notable changes to `agy-handoff` are documented in this file.
 
+## [Unreleased]
+
+- Added native Claude Code and Codex packages with shared Handoff skills and the existing MCP server.
+- Added host-aware auto-routing and explicit engine lists for cross-review and planning. Structured results report actual contributors and per-engine failures.
+- Extended nested handoff protection to every CLI runner and guarded against duplicate in-flight requests.
+
 ## [0.2.1] - 2026-11-21
 
 ### Added

@@ -1,57 +1,29 @@
-import { inspectCodex } from "./runners/codex.mjs";
-import { inspectClaude } from "./runners/claude.mjs";
-
-export const VALID_ROUTING_POLICIES = [
-  "balanced",
-  "prefer-codex",
-  "prefer-claude",
-  "least-used",
-];
-
-export const VALID_TASK_TYPES = [
-  "review",
-  "debugging",
-  "implementation",
-  "architecture",
-  "general",
-];
+import {
+  ALLOWED_EFFORTS_BY_ENGINE,
+  VALID_ROUTING_POLICIES,
+  VALID_TASK_TYPES,
+} from "./config.mjs";
+import { ENGINES } from "./engines.mjs";
+import { DEFAULT_EXTERNAL_AGENTS } from "./harness.mjs";
+export { VALID_ROUTING_POLICIES, VALID_TASK_TYPES };
 
 const INSPECT_CACHE_TTL_MS = 15_000;
-let cachedInspection = { expiresAt: 0, codex: null, claude: null };
+const cachedInspections = new Map();
 
-async function getEngineAvailability(inspectCodexFn, inspectClaudeFn) {
-  const useCache =
-    inspectCodexFn === inspectCodex &&
-    inspectClaudeFn === inspectClaude &&
-    Date.now() < cachedInspection.expiresAt;
-  if (useCache) {
-    return {
-      codexInfo: cachedInspection.codex,
-      claudeInfo: cachedInspection.claude,
-    };
+async function getAvailability(engine, inspect) {
+  const cacheable = inspect === ENGINES[engine].inspect;
+  const cached = cachedInspections.get(engine);
+  if (cacheable && cached?.expiresAt > Date.now()) return cached.info;
+  let info;
+  try {
+    info = await inspect();
+  } catch (err) {
+    info = { accessible: false, compatible: false, error: err.message };
   }
-
-  const [codexSettled, claudeSettled] = await Promise.allSettled([
-    inspectCodexFn(),
-    inspectClaudeFn(),
-  ]);
-  const codexInfo =
-    codexSettled.status === "fulfilled"
-      ? codexSettled.value
-      : { accessible: false, compatible: false, error: codexSettled.reason?.message };
-  const claudeInfo =
-    claudeSettled.status === "fulfilled"
-      ? claudeSettled.value
-      : { accessible: false, compatible: false, error: claudeSettled.reason?.message };
-
-  if (inspectCodexFn === inspectCodex && inspectClaudeFn === inspectClaude) {
-    cachedInspection = {
-      expiresAt: Date.now() + INSPECT_CACHE_TTL_MS,
-      codex: codexInfo,
-      claude: claudeInfo,
-    };
+  if (cacheable) {
+    cachedInspections.set(engine, { expiresAt: Date.now() + INSPECT_CACHE_TTL_MS, info });
   }
-  return { codexInfo, claudeInfo };
+  return info;
 }
 
 function getConsecutiveFailures(stats, engine) {
@@ -78,8 +50,10 @@ export async function resolveAutoEngine({
   model = null,
   config = {},
   jobManager = null,
-  inspectCodexFn = inspectCodex,
-  inspectClaudeFn = inspectClaude,
+  candidates = DEFAULT_EXTERNAL_AGENTS.antigravity,
+  inspectCodexFn = ENGINES.codex.inspect,
+  inspectClaudeFn = ENGINES.claude.inspect,
+  inspectAgyFn = ENGINES.agy.inspect,
 } = {}) {
   const normalizedTask = String(taskType || "general").trim().toLowerCase();
   if (!VALID_TASK_TYPES.includes(normalizedTask)) {
@@ -99,111 +73,67 @@ export async function resolveAutoEngine({
     ? routingCfg.policy
     : "balanced";
 
-  const { codexInfo, claudeInfo } = await getEngineAvailability(
-    inspectCodexFn,
-    inspectClaudeFn,
-  );
-
-  const codexAccessible = Boolean(
-    codexInfo?.accessible && codexInfo?.compatible !== false,
-  );
-  const claudeAccessible = Boolean(
-    claudeInfo?.accessible && claudeInfo?.compatible !== false,
-  );
-
-  // Respect capability & security boundaries before scoring engines.
-  const codexReady = codexAccessible;
-  let claudeReady = claudeAccessible;
-  const exclusionReasons = [];
-
-  if (claudeReady && effort && String(effort).trim().toLowerCase() === "ultra") {
-    claudeReady = false;
-    exclusionReasons.push('Claude excluded because effort "ultra" is Codex-only.');
-  }
-  if (
-    claudeReady &&
-    mode === "workspace-write" &&
-    !routingCfg.allowUnsandboxedWriteAuto
-  ) {
-    claudeReady = false;
-    exclusionReasons.push(
-      'Claude excluded for automatic workspace-write routing because Claude Bash lacks an OS sandbox (pass explicit engine: "claude" or opt in via routing.allowUnsandboxedWriteAuto).',
-    );
-  }
-
-  if (!codexReady && !claudeReady) {
-    const detail = exclusionReasons.length > 0 ? ` ${exclusionReasons.join(" ")}` : "";
-    throw new Error(
-      `No eligible CLI available for auto-routing.${detail} Run \`handoff_doctor\` or choose an engine explicitly.`,
-    );
-  }
-
-  let stats = null;
-  if (jobManager && typeof jobManager.getStats === "function") {
-    try {
-      stats = jobManager.getStats({ limit: 20 });
-    } catch {
-      stats = null;
+  const inspectors = { codex: inspectCodexFn, claude: inspectClaudeFn, agy: inspectAgyFn };
+  const availability = await Promise.all(candidates.map(async (engine) => {
+    if (effort && !ALLOWED_EFFORTS_BY_ENGINE[engine].includes(String(effort).toLowerCase())) {
+      return { engine, error: `Unsupported effort "${effort}" for ${engine}.` };
     }
+    if (mode === "workspace-write" && ENGINES[engine].unsandboxedWrite &&
+        !routingCfg.allowUnsandboxedWriteAuto) {
+      return { engine, error: "Claude Bash lacks an OS sandbox for workspace-write." };
+    }
+    const info = await getAvailability(engine, inspectors[engine] ?? ENGINES[engine].inspect);
+    return {
+      engine,
+      compatible: info?.compatible,
+      error: info?.accessible && info.compatible !== false
+        ? null
+        : info?.error || info?.compatibilityNote || "CLI missing or incompatible",
+    };
+  }));
+  const ready = availability.filter(({ error }) => !error);
+  if (!ready.length) {
+    const detail = availability.map(({ engine, error }) => `${engine}: ${error}`).join("; ");
+    throw new Error(`No eligible CLI available for auto-routing. ${detail}. Run handoff_doctor or select an engine explicitly.`);
   }
 
-  const recentCounts = {
-    codex: stats?.byEngine?.codex?.count || 0,
-    claude: stats?.byEngine?.claude?.count || 0,
-  };
-
+  let stats;
+  try {
+    stats = jobManager?.getStats({ limit: 20 });
+  } catch {
+    // Routing remains available when job statistics cannot be read.
+  }
+  const recentCounts = Object.fromEntries(candidates.map((engine) => [
+    engine, stats?.byEngine?.[engine]?.count || 0,
+  ]));
+  const confirmed = ready.filter(({ compatible }) => compatible === true);
+  const compatible = (confirmed.length ? confirmed : ready).map(({ engine }) => engine);
+  const healthy = compatible.filter((engine) => getConsecutiveFailures(stats, engine) < 2);
+  const eligible = healthy.length ? healthy : compatible;
+  const taskPref = routingCfg.taskTypes?.[normalizedTask];
+  const policyPref = policy.startsWith("prefer-") ? policy.slice(7) : null;
   let selectedEngine;
   let reason;
-
-  if (!claudeReady) {
-    selectedEngine = "codex";
-    reason =
-      exclusionReasons[0] || "Only Codex CLI is accessible and compatible.";
-  } else if (!codexReady) {
-    selectedEngine = "claude";
-    reason = "Only Claude Code CLI is accessible and compatible.";
-  } else if (codexInfo?.compatible === true && claudeInfo?.compatible !== true) {
-    selectedEngine = "codex";
-    reason = "Codex CLI has confirmed flag compatibility while Claude compatibility is unverified.";
-  } else if (claudeInfo?.compatible === true && codexInfo?.compatible !== true) {
-    selectedEngine = "claude";
-    reason = "Claude CLI has confirmed flag compatibility while Codex compatibility is unverified.";
+  if (ready.length === 1) {
+    selectedEngine = ready[0].engine;
+    reason = `Only ${selectedEngine} is eligible. ${availability.filter(({ error }) => error).map(({ error }) => error).join(" ")}`.trim();
+  } else if (compatible.length === 1) {
+    selectedEngine = compatible[0];
+    reason = `${selectedEngine} has confirmed flag compatibility.`;
+  } else if (healthy.length === 1) {
+    selectedEngine = healthy[0];
+    const failures = Math.max(...compatible.filter((engine) => engine !== selectedEngine).map((engine) => getConsecutiveFailures(stats, engine)));
+    reason = `Other compatible engines failed or timed out on their last ${failures} recent runs; routing to healthy ${selectedEngine} CLI.`;
+  } else if (eligible.includes(taskPref) || eligible.includes(policyPref)) {
+    selectedEngine = eligible.includes(taskPref) ? taskPref : policyPref;
+    reason = selectedEngine === taskPref
+      ? `Matched configured routing.taskTypes preference for "${normalizedTask}".`
+      : `Configured routing policy is "${policy}".`;
   } else {
-    const codexFailures = getConsecutiveFailures(stats, "codex");
-    const claudeFailures = getConsecutiveFailures(stats, "claude");
-    const taskPref = routingCfg.taskTypes?.[normalizedTask];
-
-    if (
-      (taskPref === "codex" || taskPref === "claude") &&
-      !(taskPref === "codex" && codexFailures >= 2 && claudeFailures < 2) &&
-      !(taskPref === "claude" && claudeFailures >= 2 && codexFailures < 2)
-    ) {
-      selectedEngine = taskPref;
-      reason = `Matched configured routing.taskTypes preference for "${normalizedTask}".`;
-    } else if (codexFailures >= 2 && claudeFailures < 2) {
-      selectedEngine = "claude";
-      reason = `Codex failed or timed out on its last ${codexFailures} recent runs; routing to healthy Claude CLI.`;
-    } else if (claudeFailures >= 2 && codexFailures < 2) {
-      selectedEngine = "codex";
-      reason = `Claude failed or timed out on its last ${claudeFailures} recent runs; routing to healthy Codex CLI.`;
-    } else if (policy === "least-used") {
-      selectedEngine = recentCounts.claude < recentCounts.codex ? "claude" : "codex";
-      reason = `Policy "least-used" selected engine with fewer runs among last ${stats?.analyzedJobs || 0} jobs (codex=${recentCounts.codex}, claude=${recentCounts.claude}).`;
-    } else if (policy === "prefer-codex") {
-      selectedEngine = "codex";
-      reason = 'Configured routing policy is "prefer-codex".';
-    } else if (policy === "prefer-claude") {
-      selectedEngine = "claude";
-      reason = 'Configured routing policy is "prefer-claude".';
-    } else if (recentCounts.claude < recentCounts.codex) {
-      selectedEngine = "claude";
-      reason = `Balanced selection among last ${stats?.analyzedJobs || 0} jobs (codex=${recentCounts.codex}, claude=${recentCounts.claude}).`;
-    } else {
-      selectedEngine = "codex";
-      reason = `Balanced selection among last ${stats?.analyzedJobs || 0} jobs (codex=${recentCounts.codex}, claude=${recentCounts.claude}).`;
-    }
+    selectedEngine = eligible.reduce((best, engine) =>
+      recentCounts[engine] < recentCounts[best] ? engine : best);
+    reason = `Policy "${policy}" selected ${selectedEngine} using recent run counts.`;
   }
-
   return {
     selectedEngine,
     routingDecision: {

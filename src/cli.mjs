@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { handleToolCall } from "./mcp-server.mjs";
+import { resolveHarness } from "./harness.mjs";
 import { JobManager } from "./jobs.mjs";
 import { validateTimeoutSec } from "./runners/common.mjs";
 import { formatStatsTable, runWatch } from "./watch.mjs";
@@ -50,6 +51,7 @@ const COMMAND_ALLOWED_FLAGS = {
     "timeout",
   ]),
   "cross-review": new Set([
+    "engines",
     "style",
     "scope",
     "base",
@@ -69,6 +71,7 @@ const COMMAND_ALLOWED_FLAGS = {
     "timeout",
   ]),
   plan: new Set([
+    "engines",
     "goal",
     "phase",
     "prompt",
@@ -149,7 +152,9 @@ Usage:
   agy-handoff watch [jobId] [--once] [--stream] [--interval <ms>]
 
 Common options:
-  --engine <codex|claude|auto>
+  --engine <codex|claude|agy|auto>
+  --engines <codex,claude,agy> (cross-review/plan)
+  AGY_HANDOFF_HOST=<antigravity|claude|codex> (external defaults)
   --task-type <review|debugging|implementation|architecture|general>
   --style <standard|adversarial>
   --scope <uncommitted|base|commit|custom | default|review|delegate|cross-review|all>
@@ -282,6 +287,7 @@ async function main() {
   const timeoutSec = parseTimeoutFlag(flags.timeout);
   const skipGitRepoCheck = Boolean(flags["skip-git-repo-check"]);
 
+  const engineDefault = resolveHarness() ? "auto" : "codex";
   let result;
   switch (command) {
     case "doctor":
@@ -293,7 +299,7 @@ async function main() {
 
     case "review":
       result = await handleToolCall("handoff_review", {
-        engine: flags.engine || "codex",
+        engine: flags.engine || engineDefault,
         taskType: flags["task-type"],
         style: flags.style || "standard",
         scope: flags.scope || "uncommitted",
@@ -311,7 +317,7 @@ async function main() {
       break;
 
     case "delegate": {
-      const delegateEngine = flags.engine || "codex";
+      const delegateEngine = flags.engine || engineDefault;
       const delegateMode = flags.mode || "read-only";
       if (delegateMode === "workspace-write" && delegateEngine === "claude") {
         process.stderr.write(
@@ -324,6 +330,7 @@ async function main() {
         prompt: flags.prompt || positional.join(" "),
         context: parseCliContext(flags),
         mode: delegateMode,
+        confirmWorkspaceWrite: delegateMode === "workspace-write" ? true : undefined,
         model: flags.model,
         effort: flags.effort,
         sessionId: flags.session,
@@ -336,6 +343,7 @@ async function main() {
 
     case "cross-review":
       result = await handleToolCall("handoff_cross_review", {
+        engines: flags.engines?.split(",").map((engine) => engine.trim()),
         style: flags.style || "adversarial",
         scope: flags.scope || "uncommitted",
         base: flags.base,
@@ -357,6 +365,7 @@ async function main() {
 
     case "plan":
       result = await handleToolCall("handoff_plan", {
+        engines: flags.engines?.split(",").map((engine) => engine.trim()),
         goal: flags.goal || flags.prompt || positional.join(" "),
         phase: flags.phase || "design",
         context: parseCliContext(flags),

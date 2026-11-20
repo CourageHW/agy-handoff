@@ -1,0 +1,13 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "codex-handoff",
+  "description": "Review, plan, and delegate to local Claude Code and Antigravity from Codex.",
+  "repository": "https://github.com/CourageHW/agy-handoff",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Codex Handoff"
+      }
+    }
+  }
+}

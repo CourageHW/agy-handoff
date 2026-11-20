@@ -5,6 +5,8 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   DEFAULT_TIMEOUT_MS,
+  handoffChildArgs,
+  handoffChildEnv,
   renameSyncSafe,
   resolveSpawnSpec,
   terminateProcessTree,
@@ -575,7 +577,7 @@ export class JobManager {
           mode: 0o600,
         });
       }
-      const spawnSpec = resolveSpawnSpec(command, args);
+      const spawnSpec = resolveSpawnSpec(command, handoffChildArgs(engine, args));
       stdoutStream = fs.createWriteStream(stdoutPath, { mode: 0o600 });
       stderrStream = fs.createWriteStream(stderrPath, { mode: 0o600 });
       eventsStream = fs.createWriteStream(eventsPath, { mode: 0o600 });
@@ -585,10 +587,7 @@ export class JobManager {
 
       child = spawn(spawnSpec.command, spawnSpec.args, {
         cwd,
-        env:
-          engine === "agy"
-            ? { ...process.env, AGY_HANDOFF_NESTED: "1" }
-            : process.env,
+        env: { ...process.env, ...handoffChildEnv(engine) },
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         detached: process.platform !== "win32",

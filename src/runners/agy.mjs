@@ -15,6 +15,7 @@ import {
   inspectBinary,
   isCliFlagCompatibilityError,
   parseSemver,
+  handoffChildEnv,
   runCommand,
   truncateOutput,
   validateCwd,
@@ -388,7 +389,7 @@ async function executeAgy(
     args: spec.args,
     cwd: spec.cwd,
     stdin: spec.stdin,
-    env: { AGY_HANDOFF_NESTED: "1" },
+    env: handoffChildEnv("agy"),
     timeoutMs,
     signal,
     onStdoutChunk(chunk) {

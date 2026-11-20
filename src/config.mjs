@@ -2,7 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { renameSyncSafe } from "./runners/common.mjs";
-import { VALID_ROUTING_POLICIES, VALID_TASK_TYPES } from "./routing.mjs";
+
+export const VALID_ROUTING_POLICIES = [
+  "balanced", "prefer-codex", "prefer-claude", "prefer-agy", "least-used",
+];
+
+export const VALID_TASK_TYPES = [
+  "review", "debugging", "implementation", "architecture", "general",
+];
 
 export const DEFAULT_ROUTING_CONFIG = {
   policy: "balanced",
@@ -205,7 +212,7 @@ function normalizeRoutingConfig(rawRouting) {
   const taskTypes = {};
   if (isPlainObject(rawRouting.taskTypes)) {
     for (const [k, v] of Object.entries(rawRouting.taskTypes)) {
-      if (VALID_TASK_TYPES.includes(k) && ["codex", "claude", "auto"].includes(v)) {
+      if (VALID_TASK_TYPES.includes(k) && (VALID_ENGINES.includes(v) || v === "auto")) {
         taskTypes[k] = v;
       }
     }
@@ -660,11 +667,11 @@ export function updateConfig(args = {}, overridePath) {
         }
         if (engineVal === null || engineVal === "auto") {
           delete next.routing.taskTypes[taskKey];
-        } else if (engineVal === "codex" || engineVal === "claude") {
+        } else if (VALID_ENGINES.includes(engineVal)) {
           next.routing.taskTypes[taskKey] = engineVal;
         } else {
           throw new Error(
-            `Invalid routing engine "${engineVal}" for taskType "${taskKey}". Expected "codex", "claude", "auto", or null.`,
+            `Invalid routing engine "${engineVal}" for taskType "${taskKey}". Expected "codex", "claude", "agy", "auto", or null.`,
           );
         }
         changed = true;

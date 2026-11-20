@@ -278,6 +278,26 @@ function isExecutable(filePath) {
   }
 }
 
+export function handoffChildEnv(engine) {
+  return {
+    AGY_HANDOFF_NESTED: "1",
+    // An explicit same-engine handoff is a separate Claude session with strict MCP and tool limits.
+    ...(engine === "claude" ? { CLAUDECODE: "" } : {}),
+  };
+}
+
+export function handoffChildArgs(engine, args) {
+  if (engine !== "codex" || !["exec", "review"].includes(args[0])) return args;
+  // Codex can filter environment variables before starting MCP. Disable the bundled
+  // handoff plugin and conventional standalone server as well as marking the child.
+  return [
+    args[0],
+    "-c", 'plugins."codex-handoff@agy-handoff".enabled=false',
+    "-c", 'mcp_servers.handoff={command="node",enabled=false}',
+    ...args.slice(1),
+  ];
+}
+
 export function getCandidatePaths(binaryName, envOverrideKey) {
   if (envOverrideKey && process.env[envOverrideKey]) {
     return [path.resolve(process.env[envOverrideKey])];

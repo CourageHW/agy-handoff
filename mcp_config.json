@@ -2,7 +2,7 @@
   "mcpServers": {
     "handoff": {
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/src/mcp-server.mjs"]
+      "args": ["${PLUGIN_ROOT}/src/mcp-server.mjs", "--host", "antigravity", "--legacy-group"]
     }
   }
 }

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { synthesisResults, SYNTHESIZER } from "./harness.mjs";
 
 const VALID_ACTIONS = new Set(["create", "modify", "delete"]);
 const VALID_SEVERITIES = new Set(["critical", "high", "medium", "low"]);
@@ -615,51 +616,12 @@ function summarizeFileTargets(fileChanges) {
   };
 }
 
-export function synthesizeCollaborativePlan({
-  codexOutput,
-  codexStructured = null,
-  codexStatus = null,
-  claudeOutput,
-  claudeStructured = null,
-  claudeStatus = null,
-  agyOutput,
-  agyStructured = null,
-  agyStatus = null,
-  cwd,
-} = {}) {
-  const includeAgy =
-    agyOutput !== undefined || agyStructured !== null || agyStatus !== null;
-  const activeEngines = includeAgy
-    ? ["codex", "claude", "agy"]
-    : ["codex", "claude"];
-
-  const rawByEngine = {
-    codex: {
-      payload: codexStructured ?? codexOutput,
-      status: codexStatus,
-      hasInput:
-        codexStructured !== null ||
-        Boolean(codexOutput && String(codexOutput).trim()),
-    },
-    claude: {
-      payload: claudeStructured ?? claudeOutput,
-      status: claudeStatus,
-      hasInput:
-        claudeStructured !== null ||
-        Boolean(claudeOutput && String(claudeOutput).trim()),
-    },
-    ...(includeAgy
-      ? {
-          agy: {
-            payload: agyStructured ?? agyOutput,
-            status: agyStatus,
-            hasInput:
-              agyStructured !== null ||
-              Boolean(agyOutput && String(agyOutput).trim()),
-          },
-        }
-      : {}),
-  };
+export function synthesizeCollaborativePlan(options = {}) {
+  const { cwd } = options;
+  const results = synthesisResults(options);
+  const activeEngines = Object.keys(results);
+  const cliExecution = {};
+  const structuredJsonParse = {};
 
   const parsedByEngine = {};
   const parseErrors = {};
@@ -668,10 +630,22 @@ export function synthesizeCollaborativePlan({
   const allVerifiedFileChanges = [];
 
   for (const engine of activeEngines) {
-    const entry = rawByEngine[engine];
-    const parsedRes = entry.hasInput
-      ? parseStructuredPlanPayload(entry.payload)
+    const result = results[engine];
+    const skipped = Boolean(result.skipped || result.attempted === false);
+    const ok = !skipped && Boolean(result.ok);
+    cliExecution[engine] = {
+      attempted: !skipped,
+      ok,
+      skipped,
+      exitCode: result.exitCode ?? null,
+      error: ok ? null : result.error || result.reason || null,
+    };
+    const parsedRes = ok
+      ? parseStructuredPlanPayload(result.structuredOutput ?? result.output)
       : { parsed: null, error: null };
+    structuredJsonParse[engine] = {
+      attempted: ok, ok: Boolean(parsedRes.parsed && !parsedRes.error), error: parsedRes.error,
+    };
     parsedByEngine[engine] = parsedRes.parsed;
     parseErrors[engine] = parsedRes.error;
     architectureSummaries[engine] = parsedRes.parsed?.architectureSummary ?? null;
@@ -690,6 +664,8 @@ export function synthesizeCollaborativePlan({
     verifiedFileChangesByEngine[engine] = verifiedChanges;
   }
 
+  const participatingEngines = activeEngines.filter((engine) => structuredJsonParse[engine].ok);
+
   // Group file changes by normalized file path across engines
   const fileGroups = new Map();
   for (const engine of activeEngines) {
@@ -707,11 +683,7 @@ export function synthesizeCollaborativePlan({
 
   const consensusFileChanges = [];
   const fileActionConflicts = [];
-  const uniqueFileChanges = {
-    codex: [],
-    claude: [],
-    ...(includeAgy ? { agy: [] } : {}),
-  };
+  const uniqueFileChanges = Object.fromEntries(activeEngines.map((engine) => [engine, []]));
 
   for (const [fileKey, byEngine] of fileGroups.entries()) {
     const engines = [...byEngine.keys()];
@@ -748,7 +720,7 @@ export function synthesizeCollaborativePlan({
         action: sample.action,
         agreedBy: engines,
         agreementCount: engines.length,
-        unanimous: engines.length === activeEngines.length,
+        unanimous: engines.length === participatingEngines.length,
         targetVerification: sample.targetVerification,
         proposals,
       });
@@ -830,18 +802,11 @@ export function synthesizeCollaborativePlan({
 
   const fileTargetSummary = summarizeFileTargets(allVerifiedFileChanges);
 
-  const buildCliStage = (status, hasInput) => ({
-    attempted: status ? !status.skipped : hasInput,
-    ok: status ? Boolean(!status.skipped && status.ok) : hasInput,
-    skipped: Boolean(status?.skipped),
-    exitCode: status?.exitCode ?? null,
-    error: status && !status.skipped && !status.ok ? status.error || status.stderr || null : null,
-  });
-
   return {
-    architecture: includeAgy ? "3-to-1" : "2-to-1",
+    architecture: `${participatingEngines.length}-to-1`,
     activeEngines,
-    synthesizer: "current_session_model",
+    participatingEngines,
+    synthesizer: SYNTHESIZER,
     architectureSummaries,
     consensusFileChanges,
     fileActionConflicts,
@@ -853,42 +818,16 @@ export function synthesizeCollaborativePlan({
     parseErrors,
     fileTargetSummary,
     verificationStages: {
-      cliExecution: {
-        codex: buildCliStage(codexStatus, rawByEngine.codex.hasInput),
-        claude: buildCliStage(claudeStatus, rawByEngine.claude.hasInput),
-        ...(includeAgy
-          ? { agy: buildCliStage(agyStatus, rawByEngine.agy.hasInput) }
-          : {}),
-      },
-      structuredJsonParse: {
-        codex: {
-          attempted: rawByEngine.codex.hasInput,
-          ok: Boolean(parsedByEngine.codex),
-          error: parseErrors.codex,
-        },
-        claude: {
-          attempted: rawByEngine.claude.hasInput,
-          ok: Boolean(parsedByEngine.claude),
-          error: parseErrors.claude,
-        },
-        ...(includeAgy
-          ? {
-              agy: {
-                attempted: rawByEngine.agy.hasInput,
-                ok: Boolean(parsedByEngine.agy),
-                error: parseErrors.agy,
-              },
-            }
-          : {}),
-      },
+      cliExecution,
+      structuredJsonParse,
       fileTargetValidity: {
-        checked: true,
+        checked: participatingEngines.length > 0,
         ...fileTargetSummary,
       },
       semanticVerification: {
         semanticallyVerified: false,
-        synthesizer: "current_session_model",
-        note: "File target checks confirm whether proposed create/modify/delete paths exist inside the workspace. The current session's conversation model must synthesize the final 3-to-1 implementation plan and verify code semantics before execution.",
+        synthesizer: SYNTHESIZER,
+        note: "The active session must verify code semantics and reconcile the proposals before execution.",
       },
     },
   };

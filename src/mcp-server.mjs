@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { JobManager } from "./jobs.mjs";
@@ -8,6 +9,7 @@ import {
   loadConfig,
   resolveEngineConfig,
   updateConfig,
+  VALID_ENGINES,
 } from "./config.mjs";
 import {
   buildDelegationPrompt,
@@ -28,6 +30,8 @@ import {
   buildCollaborativePlanPrompt,
   synthesizeCollaborativePlan,
 } from "./plan.mjs";
+import { ENGINES } from "./engines.mjs";
+import { DEFAULT_EXTERNAL_AGENTS, resolveHarness, selectGroupEngines, SYNTHESIZER } from "./harness.mjs";
 import { VALID_TASK_TYPES, resolveAutoEngine } from "./routing.mjs";
 import {
   isInsideGitRepo,
@@ -41,8 +45,6 @@ import {
   buildCodexReviewSpec,
   findCodexBinary,
   inspectCodex,
-  runCodexExec,
-  runCodexReview,
 } from "./runners/codex.mjs";
 import {
   WORKSPACE_WRITE_DISALLOWED_TOOLS,
@@ -50,16 +52,12 @@ import {
   buildClaudeReviewSpec,
   findClaudeBinary,
   inspectClaude,
-  runClaudeExec,
-  runClaudeReview,
 } from "./runners/claude.mjs";
 import {
   buildAgyExecSpec,
   buildAgyReviewSpec,
   findAgyBinary,
   inspectAgy,
-  runAgyExec,
-  runAgyReview,
 } from "./runners/agy.mjs";
 
 const SERVER_INFO = {
@@ -68,6 +66,14 @@ const SERVER_INFO = {
 };
 
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-03-26", "2024-11-05"];
+
+const GROUP_ENGINES_SCHEMA = {
+  type: "array",
+  items: { type: "string", enum: VALID_ENGINES },
+  minItems: 1,
+  uniqueItems: true,
+  description: "Optional reviewer/planner list. Can include the current harness's CLI. Omit to use the host defaults.",
+};
 
 const CONTEXT_SCHEMA = {
   type: "object",
@@ -85,7 +91,7 @@ export const TOOLS = [
   {
     name: "handoff_doctor",
     description:
-      "Check whether local Codex and Claude Code CLIs are installed, their versions, and basic authentication hints.",
+      "Check local engine availability, supported flags, authentication hints, and the current host defaults.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -95,13 +101,14 @@ export const TOOLS = [
   {
     name: "handoff_review",
     description:
-      "Run a read-only code review using local Codex or Claude Code CLI (or engine: 'auto'). Supports standard or adversarial review styles, uncommitted/base/commit/custom scopes, scoped context, and structured JSON output.",
+      "Run a read-only code review using an external CLI (or engine: 'auto'). Supports standard or adversarial review styles, uncommitted/base/commit/custom scopes, scoped context, and structured JSON output.",
     inputSchema: {
       type: "object",
       properties: {
         engine: {
           type: "string",
           enum: ["codex", "claude", "agy", "auto"],
+          default: "auto",
           description:
             "Which CLI to run the review with ('codex', 'claude', 'agy' [default: gemini-4-neon-high], or 'auto').",
         },
@@ -175,20 +182,21 @@ export const TOOLS = [
           description: "Execution timeout in seconds (default 600).",
         },
       },
-      required: ["engine"],
+      required: [],
       additionalProperties: false,
     },
   },
   {
     name: "handoff_delegate",
     description:
-      "Delegate an investigation, debugging, or coding task to local Codex or Claude Code CLI (or engine: 'auto'). Defaults to read-only mode for safety.",
+      "Delegate an investigation, debugging, or coding task to an external CLI (or engine: 'auto'). Defaults to read-only mode for safety.",
     inputSchema: {
       type: "object",
       properties: {
         engine: {
           type: "string",
           enum: ["codex", "claude", "agy", "auto"],
+          default: "auto",
           description:
             "Which CLI to delegate the task to ('codex', 'claude', 'agy' [default: gemini-4-neon-high], or 'auto').",
         },
@@ -209,6 +217,10 @@ export const TOOLS = [
           default: "read-only",
           description:
             "Execution permission mode. Always prefer 'read-only' unless file edits are explicitly intended. Note: for Claude Code, 'workspace-write' grants unrestricted Bash shell access rather than an OS filesystem/network sandbox.",
+        },
+        confirmWorkspaceWrite: {
+          type: "boolean",
+          description: "Set only after explicit user authorization for this external CLI to write. Required by Claude Code and Codex integrations.",
         },
         model: {
           type: "string",
@@ -247,14 +259,14 @@ export const TOOLS = [
           description: "Execution timeout in seconds (default 600).",
         },
       },
-      required: ["engine", "prompt"],
+      required: ["prompt"],
       additionalProperties: false,
     },
   },
   {
     name: "handoff_cross_review",
     description:
-      "Run Codex and Claude Code in parallel for an independent dual-engine second opinion on the same changes or prompt. Gracefully reports if one CLI is not installed.",
+      "Run independent external reviewers in parallel. Defaults to the host roster and returns per-engine results, including skipped or failed reviewers.",
     inputSchema: {
       type: "object",
       properties: {
@@ -276,7 +288,7 @@ export const TOOLS = [
           type: "boolean",
           default: false,
           description:
-            "Request structured findings from both engines and attach consensus, conflicts, unique findings, and mechanical citation checks.",
+            "Request structured findings from the selected engines and attach consensus, conflicts, unique findings, and mechanical citation checks.",
         },
         codexModel: { type: "string" },
         codexEffort: {
@@ -298,11 +310,11 @@ export const TOOLS = [
           enum: ["low", "medium", "high", "xhigh", "max"],
           description: "Optional effort override for the 3rd Antigravity reviewer (default: high).",
         },
+        engines: GROUP_ENGINES_SCHEMA,
         includeAgy: {
           type: "boolean",
-          default: true,
           description:
-            "Run the 3rd Antigravity reviewer (default: gemini-4-neon-high) in parallel for 3-to-1 cross-review synthesis.",
+            "Legacy roster flag: true for Codex, Claude and Antigravity, false for Codex and Claude. Prefer engines.",
         },
         cwd: { type: "string" },
         skipGitRepoCheck: {
@@ -352,7 +364,7 @@ export const TOOLS = [
         routing: {
           type: "object",
           description:
-            "Optional routing preferences: { policy: 'balanced'|'prefer-codex'|'prefer-claude'|'least-used', taskTypes: { review|debugging|implementation|architecture|general: 'codex'|'claude'|'auto'|null } }.",
+            "Optional routing preferences: { policy: 'balanced'|'prefer-codex'|'prefer-claude'|'prefer-agy'|'least-used', taskTypes: { review|debugging|implementation|architecture|general: 'codex'|'claude'|'agy'|'auto'|null } }.",
         },
       },
       additionalProperties: false,
@@ -448,7 +460,7 @@ export const TOOLS = [
         fallbackEngine: {
           type: "boolean",
           default: false,
-          description: "Switch to the alternate engine (Codex <-> Claude) on retry.",
+          description: "Use an available alternate external CLI for this host on retry.",
         },
         timeoutSec: {
           type: "integer",
@@ -478,7 +490,7 @@ export const TOOLS = [
           enum: ["discover", "design"],
           default: "design",
           description:
-            "'discover' scans the codebase in read-only mode to surface high-leverage design-tree questions for a Grill-Me interview; 'design' (default) synthesizes a complete 3-to-1 implementation plan from confirmed spec decisions.",
+            "'discover' scans the codebase in read-only mode to surface high-leverage design-tree questions for a Grill-Me interview; 'design' (default) synthesizes a collaborative implementation plan from confirmed spec decisions.",
         },
         decisions: {
           type: "array",
@@ -513,7 +525,7 @@ export const TOOLS = [
           type: "boolean",
           default: true,
           description:
-            "Request structured JSON plan blueprints from all 3 engines and synthesize consensus file targets, disk verification, merged risks, and test strategy.",
+            "Request structured JSON plan blueprints from the selected engines and synthesize consensus file targets, disk verification, merged risks, and test strategy.",
         },
         codexModel: { type: "string" },
         codexEffort: {
@@ -535,11 +547,11 @@ export const TOOLS = [
           enum: ["low", "medium", "high", "xhigh", "max"],
           description: "Optional effort override for the 3rd Antigravity planner (default: high).",
         },
+        engines: GROUP_ENGINES_SCHEMA,
         includeAgy: {
           type: "boolean",
-          default: true,
           description:
-            "Run the 3rd Antigravity planner (default: gemini-4-neon-high) in parallel for 3-to-1 collaborative plan synthesis.",
+            "Legacy roster flag: true for Codex, Claude and Antigravity, false for Codex and Claude. Prefer engines.",
         },
         allowWebSearch: {
           type: "boolean",
@@ -981,14 +993,156 @@ function buildBackgroundDelegateJobSpec({
   };
 }
 
-export async function handleToolCall(
-  name,
-  rawArgs = {},
-  jobManager = new JobManager(),
-  context = {},
-) {
+const EXECUTION_TOOLS = new Set([
+  "handoff_review", "handoff_delegate", "handoff_cross_review", "handoff_plan", "handoff_job_retry",
+]);
+const activeRequests = new WeakMap();
+
+function executionKey(name, host, args, legacyGroup) {
+  const { background, timeoutSec, confirmWorkspaceWrite, ...request } = args;
+  if (name !== "handoff_job_retry") request.cwd = validateCwd(args.cwd);
+  if (name === "handoff_review" || name === "handoff_delegate") {
+    request.engine ??= "auto";
+  }
+  if (name === "handoff_delegate") {
+    request.mode ??= "read-only";
+  }
+  if (name === "handoff_cross_review" || name === "handoff_plan") {
+    request.engines = [...groupEngines(host, args, legacyGroup)].sort();
+    delete request.includeAgy;
+  }
+  return createHash("sha256").update(JSON.stringify([name, host, request], (_key, value) =>
+    isPlainObject(value)
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)))
+      : value,
+  )).digest("hex");
+}
+
+export async function handleToolCall(name, rawArgs = {}, jobManager, context = {}) {
+  if (isNestedHandoffSession()) {
+    throw new Error("Recursive agy-handoff tool calls are disabled inside nested handoff child sessions.");
+  }
   const args = validateToolArgs(name, rawArgs);
-  const { signal, onProgress } = context || {};
+  context ??= {};
+  const host = resolveHarness(context.host);
+  const manager = jobManager ?? new JobManager();
+  if (!EXECUTION_TOOLS.has(name)) return dispatchTool(name, args, manager, { ...context, host });
+
+  // The same MCP session can receive concurrent calls with distinct JSON-RPC IDs.
+  let requests = activeRequests.get(manager);
+  if (!requests) {
+    requests = new Map();
+    activeRequests.set(manager, requests);
+  }
+  const key = executionKey(name, host, args, context.legacyGroup);
+  if (requests.has(key)) {
+    const jobId = requests.get(key);
+    const hint = jobId ? ` Check handoff_job_status with jobId "${jobId}".` : " Wait for its result.";
+    throw new Error(`An identical handoff is already running.${hint}`);
+  }
+
+  requests.set(key, null);
+  let child;
+  try {
+    const result = await dispatchTool(name, args, manager, { ...context, host });
+    child = result?.status === "running" && manager.activeChildren.get(result.jobId);
+    if (child) {
+      requests.set(key, result.jobId);
+      child.once("close", () => requests.delete(key));
+    }
+    return result;
+  } finally {
+    if (!child) requests.delete(key);
+  }
+}
+
+function failureDetails(result) {
+  if (result.ok) return {};
+  const message = [...new Set([result.error, result.stderr, result.output].filter(Boolean))].join("\n");
+  if (result.timedOut) return { failureReason: "timeout", error: "CLI timed out. Narrow the scope or increase timeoutSec." };
+  if (result.aborted) return { failureReason: "canceled", error: "CLI request canceled." };
+  if (/RESOURCE_EXHAUSTED|\b429\b|quota|rate.limit|usage limit/i.test(message)) {
+    return { failureReason: "quota", error: message.trim() || "Model quota exhausted." };
+  }
+  return { failureReason: "cli_error", error: message.trim() || "CLI failed. Run handoff_doctor and inspect the job logs." };
+}
+
+function groupEngines(host, args = {}, legacyGroup = false) {
+  return selectGroupEngines(legacyGroup ? null : host, args);
+}
+
+async function runGroup(jobManager, {
+  action, host, args, context, cwd, structured, handoffContext, runnerArgs,
+}) {
+  const requestedEngines = groupEngines(host, args, context.legacyGroup);
+  const startedAt = Date.now();
+  const review = action === "cross-review";
+  const schema = review ? STRUCTURED_REVIEW_SCHEMA : STRUCTURED_PLAN_SCHEMA;
+  const resolvedModels = Object.fromEntries(requestedEngines.map((engine) => [
+    engine,
+    resolveEngineConfig(action, engine, { model: args[`${engine}Model`], effort: args[`${engine}Effort`] }),
+  ]));
+  let progressSeq = 0;
+  const results = Object.fromEntries(await Promise.all(requestedEngines.map(async (engine) => {
+    const adapter = ENGINES[engine];
+    if (!adapter.find()) {
+      return [engine, { engine, skipped: true, reason: `${engine} CLI not installed or disabled. Run handoff_doctor for setup.` }];
+    }
+    const { model, effort } = resolvedModels[engine];
+    const codexNative = engine === "codex" && review && !structured &&
+      runnerArgs.style === "standard" && !runnerArgs.prompt && runnerArgs.scope !== "custom";
+    try {
+      const result = await runTrackedForeground(jobManager, {
+        engine, action, cwd, model, effort, structured, handoffContext,
+        jsonStream: !codexNative,
+        onProgress: ({ message }) => context.onProgress?.({ progress: ++progressSeq, message }),
+      }, (onEvent) => adapter[review ? "review" : "delegate"]({
+        ...runnerArgs,
+        model, effort, cwd, signal: context.signal, onEvent,
+        ...(structured ? { [adapter.schemaOption]: schema } : {}),
+      }));
+      return [engine, { ...result, ...failureDetails(result) }];
+    } catch (err) {
+      return [engine, { engine, ok: false, ...failureDetails({ error: err.message }) }];
+    }
+  })));
+  const successfulEngines = requestedEngines.filter((engine) => results[engine].ok);
+  const enginesSkipped = requestedEngines.filter((engine) => results[engine].skipped).length;
+  const enginesAttempted = requestedEngines.length - enginesSkipped;
+  const enginesSucceeded = successfulEngines.length;
+  const synthesis = structured
+    ? (review ? synthesizeStructuredCrossReview : synthesizeCollaborativePlan)({ results, cwd })
+    : null;
+  const participatingEngines = synthesis?.participatingEngines ?? successfulEngines;
+  const ok = participatingEngines.length > 0;
+  const error = enginesSucceeded > 0
+    ? "No selected CLI produced valid structured results. See the structured parse errors."
+    : "No selected CLI succeeded. See per-engine results and run handoff_doctor.";
+  return {
+    ok,
+    partial: participatingEngines.length < requestedEngines.length,
+    architecture: `${participatingEngines.length}-to-1`,
+    synthesizer: SYNTHESIZER,
+    synthesizerHost: host,
+    requestedEngines,
+    participatingEngines,
+    ...(ok ? {} : { error }),
+    ...(handoffContext ? { handoffContext } : {}),
+    summary: {
+      totalDurationMs: Date.now() - startedAt,
+      enginesAttempted,
+      enginesSucceeded,
+      enginesFailed: enginesAttempted - enginesSucceeded,
+      enginesSkipped,
+    },
+    resolvedModels,
+    ...(synthesis ? { [review ? "structuredSynthesis" : "structuredPlan"]: synthesis } : {}),
+    results,
+  };
+}
+
+async function dispatchTool(name, args, jobManager, context) {
+  const { signal, onProgress, host } = context;
 
   switch (name) {
     case "handoff_doctor": {
@@ -1002,6 +1156,9 @@ export async function handleToolCall(
       return {
         nodeVersion: process.version,
         platform: process.platform,
+        host,
+        defaultExternalAgents: DEFAULT_EXTERNAL_AGENTS[host ?? "antigravity"],
+        defaultGroupEngines: groupEngines(host, {}, context.legacyGroup),
         engines: { codex, claude, agy },
         configPath: summary.configPath,
         modelDefaults: summary.effective,
@@ -1024,7 +1181,7 @@ export async function handleToolCall(
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? (scope === "custom" ? !isInsideGitRepo(resolvedCwd) : false);
 
-      let selectedEngine = args.engine;
+      let selectedEngine = args.engine ?? "auto";
       let routingDecision = null;
       if (selectedEngine === "auto") {
         const routed = await resolveAutoEngine({
@@ -1033,6 +1190,7 @@ export async function handleToolCall(
           effort: args.effort,
           model: args.model,
           config: loadConfig(),
+          candidates: DEFAULT_EXTERNAL_AGENTS[host ?? "antigravity"],
           jobManager,
         });
         selectedEngine = routed.selectedEngine;
@@ -1123,12 +1281,7 @@ export async function handleToolCall(
           jsonStream: !usesCodexNative,
           onProgress,
         },
-        (onEvent) =>
-          selectedEngine === "codex"
-            ? runCodexReview({ ...effectiveArgs, onEvent })
-            : selectedEngine === "agy"
-              ? runAgyReview({ ...effectiveArgs, onEvent })
-              : runClaudeReview({ ...effectiveArgs, onEvent }),
+        (onEvent) => ENGINES[selectedEngine].review({ ...effectiveArgs, onEvent }),
       );
       const structuredReview = args.structured
         ? buildStructuredSingleReview({
@@ -1143,6 +1296,7 @@ export async function handleToolCall(
         : undefined;
       return {
         ...result,
+        ...failureDetails(result),
         ...(structuredReview ? { structuredReview } : {}),
         ...(routingDecision ? { routingDecision } : {}),
         ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
@@ -1152,6 +1306,12 @@ export async function handleToolCall(
     case "handoff_delegate": {
       const { background = false } = args;
       const mode = args.mode || "read-only";
+      if (mode === "workspace-write" && (host === "claude" || host === "codex")) {
+        if (args.confirmWorkspaceWrite !== true) {
+          throw new Error("Workspace-write requires explicit user approval. Set confirmWorkspaceWrite only after the user approves external edits.");
+        }
+        if (!args.cwd) throw new Error("Pass the explicitly approved workspace directory as cwd.");
+      }
       if (mode === "workspace-write" && args.sessionId === "last") {
         throw new Error(
           'Refusing to use sessionId="last" in workspace-write mode; pass an explicit session ID.',
@@ -1175,7 +1335,7 @@ export async function handleToolCall(
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
 
-      let selectedEngine = args.engine;
+      let selectedEngine = args.engine ?? "auto";
       let routingDecision = null;
       if (selectedEngine === "auto") {
         if (args.sessionId) {
@@ -1189,36 +1349,30 @@ export async function handleToolCall(
           effort: args.effort,
           model: args.model,
           config: loadConfig(),
+          candidates: DEFAULT_EXTERNAL_AGENTS[host ?? "antigravity"],
           jobManager,
         });
         selectedEngine = routed.selectedEngine;
         routingDecision = routed.routingDecision;
       }
 
-      const sandboxModel =
-        mode === "workspace-write"
-          ? selectedEngine === "codex"
-            ? "os-sandbox (workspace-write)"
-            : "restricted-file-tools + acceptEdits + unsandboxed-bash"
-          : undefined;
-      const permissionBoundary =
-        mode === "workspace-write"
-          ? {
-              mode: "workspace-write",
-              engine: selectedEngine,
-              requiresExplicitUserApproval: true,
-              osSandboxed: selectedEngine === "codex",
-              sandboxModel,
-              disallowedCommands:
-                selectedEngine === "claude"
-                  ? WORKSPACE_WRITE_DISALLOWED_TOOLS.split(",")
-                  : [],
-              warning:
-                selectedEngine === "claude"
-                  ? "Claude Code built-in file tools (Read/Edit/Write/Grep/Glob) are confined to cwd via --restricted, but Bash runs without an OS filesystem/network sandbox. Confirm observed workspaceGitDelta and executionEvidence."
-                  : "Codex runs inside an OS workspace-write sandbox confined to cwd. Confirm observed workspaceGitDelta and executionEvidence.",
-            }
-          : undefined;
+      const unsandboxedWrite = ENGINES[selectedEngine].unsandboxedWrite === true;
+      const sandboxModel = mode === "workspace-write"
+        ? unsandboxedWrite
+          ? "restricted-file-tools + acceptEdits + unsandboxed-bash"
+          : selectedEngine === "agy" ? "agy --sandbox --mode accept-edits" : "os-sandbox (workspace-write)"
+        : undefined;
+      const permissionBoundary = sandboxModel ? {
+        mode,
+        engine: selectedEngine,
+        requiresExplicitUserApproval: true,
+        osSandboxed: selectedEngine === "codex",
+        sandboxModel,
+        disallowedCommands: unsandboxedWrite ? WORKSPACE_WRITE_DISALLOWED_TOOLS.split(",") : [],
+        warning: unsandboxedWrite
+          ? "Claude file tools are confined to cwd via --restricted. Bash runs without an OS filesystem/network sandbox."
+          : "Confirm observed workspaceGitDelta and executionEvidence after edits.",
+      } : undefined;
 
       const resolved = resolveEngineConfig("delegate", selectedEngine, {
         model: args.model,
@@ -1288,15 +1442,11 @@ export async function handleToolCall(
           jsonStream: true,
           onProgress,
         },
-        (onEvent) =>
-          selectedEngine === "codex"
-            ? runCodexExec({ ...effectiveArgs, onEvent })
-            : selectedEngine === "agy"
-              ? runAgyExec({ ...effectiveArgs, onEvent })
-              : runClaudeExec({ ...effectiveArgs, onEvent }),
+        (onEvent) => ENGINES[selectedEngine].delegate({ ...effectiveArgs, onEvent }),
       );
       return {
         ...result,
+        ...failureDetails(result),
         ...(sandboxModel ? { sandboxModel } : {}),
         ...(permissionBoundary ? { permissionBoundary } : {}),
         ...(routingDecision ? { routingDecision } : {}),
@@ -1305,18 +1455,6 @@ export async function handleToolCall(
     }
 
     case "handoff_cross_review": {
-      const startedAt = Date.now();
-      const codexBin = findCodexBinary();
-      const claudeBin = findClaudeBinary();
-      const agyBin = findAgyBinary();
-      const shouldIncludeAgy = args.includeAgy !== false;
-
-      if (!codexBin && !claudeBin && (!shouldIncludeAgy || !agyBin)) {
-        throw new Error(
-          "Neither `codex`, `claude`, nor `agy` CLI was found in PATH. Run `handoff_doctor` for install instructions.",
-        );
-      }
-
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
       const style = args.style || "adversarial";
       const scope = args.scope || "uncommitted";
@@ -1341,289 +1479,15 @@ export async function handleToolCall(
         args.skipGitRepoCheck ?? (scope === "custom" ? !isInsideGitRepo(resolvedCwd) : false);
       const structured = Boolean(args.structured);
 
-      const codexCfg = resolveEngineConfig("cross-review", "codex", {
-        model: args.codexModel,
-        effort: args.codexEffort,
-      });
-      const claudeCfg = resolveEngineConfig("cross-review", "claude", {
-        model: args.claudeModel,
-        effort: args.claudeEffort,
-      });
-      const agyCfg = resolveEngineConfig("cross-review", "agy", {
-        model: args.agyModel,
-        effort: args.agyEffort,
-      });
-
-      let progressSeq = 0;
-      const emitCombinedProgress = (engine, ev) => {
-        if (typeof onProgress !== "function") return;
-        progressSeq += 1;
-        onProgress({
-          progress: progressSeq,
-          message: `[${engine}] ${ev.summary}`,
-        });
-      };
-
-      const tasks = [];
-      if (codexBin) {
-        tasks.push(
-          runTrackedForeground(
-            jobManager,
-            {
-              engine: "codex",
-              action: "cross-review",
-              cwd: resolvedCwd,
-              model: codexCfg.model,
-              effort: codexCfg.effort,
-              mode: "read-only",
-              handoffContext: ctx.metadata,
-              jsonStream:
-                structured ||
-                style !== "standard" ||
-                Boolean(effectivePrompt) ||
-                scope === "custom",
-              onProgress: ({ message }) => {
-                if (typeof onProgress === "function") {
-                  progressSeq += 1;
-                  onProgress({ progress: progressSeq, message });
-                }
-              },
-            },
-            (onEvent) =>
-              runCodexReview({
-                style,
-                scope,
-                base: args.base,
-                commit: args.commit,
-                prompt: effectivePrompt,
-                model: codexCfg.model,
-                effort: codexCfg.effort,
-                cwd: resolvedCwd,
-                skipGitRepoCheck,
-                disableWebSearch: true,
-                timeoutSec,
-                signal,
-                outputSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
-                onEvent: (ev) => {
-                  onEvent(ev);
-                  void emitCombinedProgress;
-                },
-              }),
-          ).catch((err) => ({
-            engine: "codex",
-            ok: false,
-            error: err.message,
-          })),
-        );
-      } else {
-        tasks.push(
-          Promise.resolve({
-            engine: "codex",
-            skipped: true,
-            reason: "codex CLI not installed",
-          }),
-        );
-      }
-
-      if (claudeBin) {
-        tasks.push(
-          runTrackedForeground(
-            jobManager,
-            {
-              engine: "claude",
-              action: "cross-review",
-              cwd: resolvedCwd,
-              model: claudeCfg.model,
-              effort: claudeCfg.effort,
-              mode: "read-only",
-              handoffContext: ctx.metadata,
-              jsonStream: true,
-              onProgress: ({ message }) => {
-                if (typeof onProgress === "function") {
-                  progressSeq += 1;
-                  onProgress({ progress: progressSeq, message });
-                }
-              },
-            },
-            (onEvent) =>
-              runClaudeReview({
-                style,
-                scope,
-                base: args.base,
-                commit: args.commit,
-                prompt: effectivePrompt,
-                model: claudeCfg.model,
-                effort: claudeCfg.effort,
-                cwd: resolvedCwd,
-                timeoutSec,
-                signal,
-                jsonSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
-                onEvent,
-              }),
-          ).catch((err) => ({
-            engine: "claude",
-            ok: false,
-            error: err.message,
-          })),
-        );
-      } else {
-        tasks.push(
-          Promise.resolve({
-            engine: "claude",
-            skipped: true,
-            reason: "claude CLI not installed",
-          }),
-        );
-      }
-
-      if (shouldIncludeAgy) {
-        if (agyBin) {
-          tasks.push(
-            runTrackedForeground(
-              jobManager,
-              {
-                engine: "agy",
-                action: "cross-review",
-                cwd: resolvedCwd,
-                model: agyCfg.model,
-                effort: agyCfg.effort,
-                mode: "read-only",
-                handoffContext: ctx.metadata,
-                jsonStream: true,
-                onProgress: ({ message }) => {
-                  if (typeof onProgress === "function") {
-                    progressSeq += 1;
-                    onProgress({ progress: progressSeq, message });
-                  }
-                },
-              },
-              (onEvent) =>
-                runAgyReview({
-                  style,
-                  scope,
-                  base: args.base,
-                  commit: args.commit,
-                  prompt: effectivePrompt,
-                  model: agyCfg.model,
-                  effort: agyCfg.effort,
-                  cwd: resolvedCwd,
-                  timeoutSec,
-                  signal,
-                  jsonSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
-                  onEvent,
-                }),
-            ).catch((err) => ({
-              engine: "agy",
-              ok: false,
-              error: err.message,
-            })),
-          );
-        } else {
-          tasks.push(
-            Promise.resolve({
-              engine: "agy",
-              skipped: true,
-              reason: "agy CLI not installed",
-            }),
-          );
-        }
-      }
-
-      const [codexResult, claudeResult, agyResult = null] = await Promise.all(tasks);
-      const allResults = shouldIncludeAgy
-        ? [codexResult, claudeResult, agyResult]
-        : [codexResult, claudeResult];
-      const enginesAttempted = allResults.filter((r) => r && !r.skipped).length;
-      const enginesSucceeded = allResults.filter((r) => r && !r.skipped && r.ok).length;
-      const enginesFailed = allResults.filter((r) => r && !r.skipped && !r.ok).length;
-      const enginesSkipped = allResults.filter((r) => r && r.skipped).length;
-      const ok = enginesSucceeded > 0;
-
-      let structuredSynthesis;
-      if (structured) {
-        try {
-          structuredSynthesis = synthesizeStructuredCrossReview({
-            codexOutput:
-              !codexResult.skipped && codexResult.ok ? codexResult.output : "",
-            codexStructured:
-              !codexResult.skipped && codexResult.ok
-                ? codexResult.structuredOutput || null
-                : null,
-            codexStatus: codexResult,
-            claudeOutput:
-              !claudeResult.skipped && claudeResult.ok ? claudeResult.output : "",
-            claudeStructured:
-              !claudeResult.skipped && claudeResult.ok
-                ? claudeResult.structuredOutput || null
-                : null,
-            claudeStatus: claudeResult,
-            ...(shouldIncludeAgy
-              ? {
-                  agyOutput:
-                    !agyResult.skipped && agyResult.ok ? agyResult.output : "",
-                  agyStructured:
-                    !agyResult.skipped && agyResult.ok
-                      ? agyResult.structuredOutput || null
-                      : null,
-                  agyStatus: agyResult,
-                }
-              : {}),
-            cwd: resolvedCwd,
-          });
-        } catch (err) {
-          structuredSynthesis = {
-            summaries: {
-              codex: null,
-              claude: null,
-              ...(shouldIncludeAgy ? { agy: null } : {}),
-            },
-            consensus: [],
-            conflicts: [],
-            uniqueCodex: [],
-            uniqueClaude: [],
-            ...(shouldIncludeAgy ? { uniqueAgy: [] } : {}),
-            parseErrors: {
-              codex: err.message,
-              claude: err.message,
-              ...(shouldIncludeAgy ? { agy: err.message } : {}),
-            },
-            citationSummary: {
-              totalFindings: 0,
-              validCitations: 0,
-              fileOnlyCitations: 0,
-              invalidOrMissingCitations: 0,
-              error: err.message,
-            },
-          };
-        }
-      }
-
-      return {
-        ok,
-        architecture: shouldIncludeAgy ? "3-to-1" : "2-to-1",
-        synthesizer: "current_session_model",
-        style,
-        scope,
-        ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
-        summary: {
-          totalDurationMs: Date.now() - startedAt,
-          enginesAttempted,
-          enginesSucceeded,
-          enginesFailed,
-          enginesSkipped,
+      const group = await runGroup(jobManager, {
+        action: "cross-review", host, args, context, cwd: resolvedCwd, structured,
+        handoffContext: ctx.metadata,
+        runnerArgs: {
+          style, scope, base: args.base, commit: args.commit, prompt: effectivePrompt,
+          skipGitRepoCheck, disableWebSearch: true, timeoutSec,
         },
-        resolvedModels: {
-          codex: codexCfg,
-          claude: claudeCfg,
-          ...(shouldIncludeAgy ? { agy: agyCfg } : {}),
-        },
-        ...(structuredSynthesis ? { structuredSynthesis } : {}),
-        results: {
-          codex: codexResult,
-          claude: claudeResult,
-          ...(shouldIncludeAgy ? { agy: agyResult } : {}),
-        },
-      };
+      });
+      return { ...group, style, scope };
     }
 
     case "handoff_config": {
@@ -1687,10 +1551,12 @@ export async function handleToolCall(
       }
 
       const targetEngine = fallbackEngine
-        ? meta.engine === "codex"
-          ? "claude"
-          : "codex"
+        ? DEFAULT_EXTERNAL_AGENTS[host ?? "antigravity"].find((engine) =>
+          engine !== meta.engine && ENGINES[engine].find())
         : meta.engine;
+      if (!targetEngine) {
+        throw new Error("No alternate external CLI found. Run handoff_doctor or retry with the original engine.");
+      }
       const targetCmd = meta.action === "review" ? "review" : "delegate";
       const resolved = resolveEngineConfig(targetCmd, targetEngine);
       const resolvedCwd = validateCwd(meta.cwd);
@@ -1746,18 +1612,6 @@ export async function handleToolCall(
     }
 
     case "handoff_plan": {
-      const startedAt = Date.now();
-      const codexBin = findCodexBinary();
-      const claudeBin = findClaudeBinary();
-      const agyBin = findAgyBinary();
-      const shouldIncludeAgy = args.includeAgy !== false;
-
-      if (!codexBin && !claudeBin && (!shouldIncludeAgy || !agyBin)) {
-        throw new Error(
-          "Neither `codex`, `claude`, nor `agy` CLI was found in PATH. Run `handoff_doctor` for install instructions.",
-        );
-      }
-
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
       const phase = args.phase || "design";
       const structured = args.structured !== false;
@@ -1781,249 +1635,15 @@ export async function handleToolCall(
         structured,
       });
 
-      const codexCfg = resolveEngineConfig("plan", "codex", {
-        model: args.codexModel,
-        effort: args.codexEffort,
-      });
-      const claudeCfg = resolveEngineConfig("plan", "claude", {
-        model: args.claudeModel,
-        effort: args.claudeEffort,
-      });
-      const agyCfg = resolveEngineConfig("plan", "agy", {
-        model: args.agyModel,
-        effort: args.agyEffort,
-      });
-
-      let progressSeq = 0;
-      const tasks = [];
-
-      if (codexBin) {
-        tasks.push(
-          runTrackedForeground(
-            jobManager,
-            {
-              engine: "codex",
-              action: "plan",
-              cwd: resolvedCwd,
-              model: codexCfg.model,
-              effort: codexCfg.effort,
-              mode: "read-only",
-              structured,
-              handoffContext: ctx.metadata,
-              jsonStream: true,
-              onProgress: ({ message }) => {
-                if (typeof onProgress === "function") {
-                  progressSeq += 1;
-                  onProgress({ progress: progressSeq, message });
-                }
-              },
-            },
-            (onEvent) =>
-              runCodexExec({
-                prompt: composedPrompt,
-                mode: "read-only",
-                model: codexCfg.model,
-                effort: codexCfg.effort,
-                cwd: resolvedCwd,
-                skipGitRepoCheck,
-                ephemeral: true,
-                disableWebSearch: args.allowWebSearch !== true,
-                timeoutSec,
-                signal,
-                outputSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
-                onEvent,
-              }),
-          ).catch((err) => ({
-            engine: "codex",
-            ok: false,
-            error: err.message,
-          })),
-        );
-      } else {
-        tasks.push(
-          Promise.resolve({
-            engine: "codex",
-            skipped: true,
-            reason: "codex CLI not installed",
-          }),
-        );
-      }
-
-      if (claudeBin) {
-        tasks.push(
-          runTrackedForeground(
-            jobManager,
-            {
-              engine: "claude",
-              action: "plan",
-              cwd: resolvedCwd,
-              model: claudeCfg.model,
-              effort: claudeCfg.effort,
-              mode: "read-only",
-              structured,
-              handoffContext: ctx.metadata,
-              jsonStream: true,
-              onProgress: ({ message }) => {
-                if (typeof onProgress === "function") {
-                  progressSeq += 1;
-                  onProgress({ progress: progressSeq, message });
-                }
-              },
-            },
-            (onEvent) =>
-              runClaudeExec({
-                prompt: composedPrompt,
-                mode: "read-only",
-                model: claudeCfg.model,
-                effort: claudeCfg.effort,
-                cwd: resolvedCwd,
-                ephemeral: true,
-                timeoutSec,
-                signal,
-                jsonSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
-                onEvent,
-              }),
-          ).catch((err) => ({
-            engine: "claude",
-            ok: false,
-            error: err.message,
-          })),
-        );
-      } else {
-        tasks.push(
-          Promise.resolve({
-            engine: "claude",
-            skipped: true,
-            reason: "claude CLI not installed",
-          }),
-        );
-      }
-
-      if (shouldIncludeAgy) {
-        if (agyBin) {
-          tasks.push(
-            runTrackedForeground(
-              jobManager,
-              {
-                engine: "agy",
-                action: "plan",
-                cwd: resolvedCwd,
-                model: agyCfg.model,
-                effort: agyCfg.effort,
-                mode: "read-only",
-                structured,
-                handoffContext: ctx.metadata,
-                jsonStream: true,
-                onProgress: ({ message }) => {
-                  if (typeof onProgress === "function") {
-                    progressSeq += 1;
-                    onProgress({ progress: progressSeq, message });
-                  }
-                },
-              },
-              (onEvent) =>
-                runAgyExec({
-                  prompt: composedPrompt,
-                  mode: "read-only",
-                  model: agyCfg.model,
-                  effort: agyCfg.effort,
-                  cwd: resolvedCwd,
-                  timeoutSec,
-                  signal,
-                  jsonSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
-                  onEvent,
-                }),
-            ).catch((err) => ({
-              engine: "agy",
-              ok: false,
-              error: err.message,
-            })),
-          );
-        } else {
-          tasks.push(
-            Promise.resolve({
-              engine: "agy",
-              skipped: true,
-              reason: "agy CLI not installed",
-            }),
-          );
-        }
-      }
-
-      const [codexResult, claudeResult, agyResult = null] = await Promise.all(tasks);
-      const allResults = shouldIncludeAgy
-        ? [codexResult, claudeResult, agyResult]
-        : [codexResult, claudeResult];
-      const enginesAttempted = allResults.filter((r) => r && !r.skipped).length;
-      const enginesSucceeded = allResults.filter((r) => r && !r.skipped && r.ok).length;
-      const enginesFailed = allResults.filter((r) => r && !r.skipped && !r.ok).length;
-      const enginesSkipped = allResults.filter((r) => r && r.skipped).length;
-      const ok = enginesSucceeded > 0;
-
-      let structuredPlan;
-      if (structured) {
-        try {
-          structuredPlan = synthesizeCollaborativePlan({
-            codexOutput:
-              !codexResult.skipped && codexResult.ok ? codexResult.output : "",
-            codexStructured:
-              !codexResult.skipped && codexResult.ok
-                ? codexResult.structuredOutput || null
-                : null,
-            codexStatus: codexResult,
-            claudeOutput:
-              !claudeResult.skipped && claudeResult.ok ? claudeResult.output : "",
-            claudeStructured:
-              !claudeResult.skipped && claudeResult.ok
-                ? claudeResult.structuredOutput || null
-                : null,
-            claudeStatus: claudeResult,
-            ...(shouldIncludeAgy
-              ? {
-                  agyOutput:
-                    !agyResult.skipped && agyResult.ok ? agyResult.output : "",
-                  agyStructured:
-                    !agyResult.skipped && agyResult.ok
-                      ? agyResult.structuredOutput || null
-                      : null,
-                  agyStatus: agyResult,
-                }
-              : {}),
-            cwd: resolvedCwd,
-          });
-        } catch (err) {
-          structuredPlan = {
-            error: err.message,
-          };
-        }
-      }
-
-      return {
-        ok,
-        architecture: shouldIncludeAgy ? "3-to-1" : "2-to-1",
-        synthesizer: "current_session_model",
-        phase,
-        goal: args.goal,
-        ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
-        summary: {
-          totalDurationMs: Date.now() - startedAt,
-          enginesAttempted,
-          enginesSucceeded,
-          enginesFailed,
-          enginesSkipped,
+      const group = await runGroup(jobManager, {
+        action: "plan", host, args, context, cwd: resolvedCwd, structured,
+        handoffContext: ctx.metadata,
+        runnerArgs: {
+          prompt: composedPrompt, mode: "read-only", ephemeral: true,
+          skipGitRepoCheck, disableWebSearch: args.allowWebSearch !== true, timeoutSec,
         },
-        resolvedModels: {
-          codex: codexCfg,
-          claude: claudeCfg,
-          ...(shouldIncludeAgy ? { agy: agyCfg } : {}),
-        },
-        ...(structuredPlan ? { structuredPlan } : {}),
-        results: {
-          codex: codexResult,
-          claude: claudeResult,
-          ...(shouldIncludeAgy ? { agy: agyResult } : {}),
-        },
-      };
+      });
+      return { ...group, phase, goal: args.goal };
     }
 
     default:
@@ -2033,7 +1653,7 @@ export async function handleToolCall(
 
 export function createJsonRpcHandler(
   jobManager = isNestedHandoffSession() ? null : new JobManager(),
-  { emitNotification, nested = isNestedHandoffSession() } = {},
+  { emitNotification, nested = isNestedHandoffSession(), host = resolveHarness(), legacyGroup = false } = {},
 ) {
   const inFlight = new Map();
 
@@ -2101,7 +1721,7 @@ export function createJsonRpcHandler(
               capabilities: {
                 tools: {},
               },
-              serverInfo: SERVER_INFO,
+              serverInfo: { ...SERVER_INFO, name: host === "claude" || host === "codex" ? `${host}-handoff` : SERVER_INFO.name },
             },
           };
         }
@@ -2161,6 +1781,8 @@ export function createJsonRpcHandler(
             const data = await handleToolCall(toolName, toolArgs, jobManager, {
               signal: controller.signal,
               onProgress,
+              host: host ?? undefined,
+              legacyGroup,
             });
             if (controller.signal.aborted) {
               return {
@@ -2244,6 +1866,12 @@ export function createJsonRpcHandler(
 }
 
 function startStdioServer() {
+  const argv = process.argv.slice(2);
+  const legacyGroup = argv[2] === "--legacy-group" && argv[1] === "antigravity";
+  if (argv.length && (argv[0] !== "--host" || argv.length !== (legacyGroup ? 3 : 2))) {
+    throw new Error("Usage: node mcp-server.mjs [--host antigravity|claude|codex]");
+  }
+  const host = resolveHarness(argv[1]);
   const nested = isNestedHandoffSession();
   const jobManager = nested ? null : new JobManager();
   let buffer = "";
@@ -2260,6 +1888,8 @@ function startStdioServer() {
   const handleMessage = createJsonRpcHandler(jobManager, {
     emitNotification: writeResponse,
     nested,
+    host,
+    legacyGroup,
   });
 
   const dispatchLine = (line) => {

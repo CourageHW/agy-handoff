@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -30,12 +30,12 @@ function createFakeExecutable(dir, name, jsSource) {
 }
 
 class McpStdioClient {
-  constructor(envOverrides = {}) {
+  constructor(envOverrides = {}, serverArgs = [serverPath]) {
     this.nextId = 1;
     this.pending = new Map();
     this.buffer = "";
     this.stderr = "";
-    this.child = spawn(process.execPath, [serverPath], {
+    this.child = spawn(process.execPath, serverArgs, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...envOverrides },
     });
@@ -282,7 +282,9 @@ test("Plugin bundle structure and manifest references are complete", () => {
   assert.equal(plugin.name, "agy-handoff");
   assert.ok(Array.isArray(plugin.suggestedPrompts) && plugin.suggestedPrompts.length <= 3);
   assert.equal(mcp.mcpServers.handoff.command, "node");
-  assert.deepEqual(mcp.mcpServers.handoff.args, ["${PLUGIN_ROOT}/src/mcp-server.mjs"]);
+  assert.deepEqual(mcp.mcpServers.handoff.args, [
+    "${PLUGIN_ROOT}/src/mcp-server.mjs", "--host", "antigravity", "--legacy-group",
+  ]);
 
   for (const rel of [
     "agents/codex-handoff.md",
@@ -707,5 +709,227 @@ test("E2E MCP: cross-review fallback on missing CLI, partial error tolerance, an
   } finally {
     await clientV2.close().catch(() => {});
     fs.rmSync(tmpDir, RM_OPTS);
+  }
+});
+
+function createHostEngine(dir, engine) {
+  return createFakeExecutable(dir, engine, `
+    import { spawnSync } from "node:child_process";
+    const args = process.argv.slice(2);
+    if (args.includes("--version")) {
+      console.log(${JSON.stringify({ codex: "codex-cli 0.171.0", claude: "2.1.325 (Claude Code)", agy: "1.5.13" }[engine])});
+      process.exit(0);
+    }
+    if (args.includes("--help")) process.exit(0);
+    let prompt = args.includes("--print") ? args[args.indexOf("--print") + 1] : "";
+    for await (const chunk of process.stdin) prompt += chunk;
+    // Test the actual nested MCP boundary in the captured child environment.
+    const nested = spawnSync(process.execPath, [
+      ${JSON.stringify(serverPath)}, "--host", ${JSON.stringify(engine === "claude" ? "codex" : "claude")},
+    ], {
+      input: [
+        { jsonrpc: "2.0", id: 1, method: "tools/list" },
+        { jsonrpc: "2.0", id: 2, method: "tools/call", params: {
+          name: "handoff_delegate", arguments: { engine: ${JSON.stringify(engine)}, prompt: "nested" },
+        }},
+      ].map(JSON.stringify).join("\\n") + "\\n",
+      encoding: "utf8",
+      timeout: 3000,
+      env: {
+        ...process.env,
+        AGY_HANDOFF_CODEX_BIN: ${JSON.stringify(path.join(dir, "missing-codex"))},
+        AGY_HANDOFF_CLAUDE_BIN: ${JSON.stringify(path.join(dir, "missing-claude"))},
+        AGY_HANDOFF_AGY_BIN: "none",
+      },
+    });
+    const responses = nested.stdout.trim().split("\\n").map(JSON.parse);
+    const blocked = responses.some((r) => r.id === 1 && r.result.tools.length === 0) &&
+      responses.some((r) => r.id === 2 && r.result.isError &&
+        r.result.content[0].text.includes("Recursive"));
+    const engine = ${JSON.stringify(engine)};
+    if (!blocked || (engine === "claude" && process.env.CLAUDECODE)) process.exit(2);
+    if (engine === "agy" && prompt.includes("quota fixture")) {
+      console.error("429 RESOURCE_EXHAUSTED");
+      process.exit(1);
+    }
+    if (prompt.includes("duplicate fixture")) await new Promise((resolve) => setTimeout(resolve, 1000));
+    const summary = engine + " nested handoff blocked";
+    const review = { summary, findings: [] };
+    const plan = {
+      architectureSummary: summary,
+      fileChanges: [],
+      implementationSteps: [],
+      risksAndEdgeCases: [],
+      testStrategy: [],
+      openQuestions: [],
+    };
+    if (prompt.includes("invalid fixture") && engine === "agy") {
+      review.findings = "invalid";
+    }
+    const payload = prompt.includes("portable design") ? plan : review;
+    if (engine === "claude") {
+      console.log(JSON.stringify({ type: "result", is_error: false, result: JSON.stringify(payload),
+        structured_output: payload }));
+    } else if (engine === "agy") {
+      console.log(JSON.stringify({ event: "result", result: {
+        status: "SUCCESS", response: JSON.stringify(payload), structured_output: payload,
+      }}));
+    } else {
+      console.log(JSON.stringify({ type: "item.completed", item: {
+        type: "agent_message", text: JSON.stringify(payload),
+      }}));
+    }
+  `);
+}
+
+test("packaged host adapters share the same tools, select peers and block recursive CLI handoffs", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-hosts with spaces-"));
+  const clients = [];
+  try {
+    const stage = path.join(dir, "marketplace");
+    const packed = spawnSync(process.execPath, [path.join(repoRoot, "scripts/package-integrations.mjs"), stage], { encoding: "utf8" });
+    assert.equal(packed.status, 0, packed.stderr);
+    const read = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+    const env = {
+      AGY_HANDOFF_JOBS_DIR: path.join(dir, "jobs"),
+      AGY_HANDOFF_CONFIG: path.join(dir, "config.json"),
+      AGY_HANDOFF_CODEX_BIN: createHostEngine(dir, "codex"),
+      AGY_HANDOFF_CLAUDE_BIN: createHostEngine(dir, "claude"),
+      AGY_HANDOFF_AGY_BIN: createHostEngine(dir, "agy"),
+      // Simulate the Claude host's session marker.
+      CLAUDECODE: "1",
+      AGY_HANDOFF_HOST: "codex",
+    };
+    for (const [host, peers] of Object.entries({
+      antigravity: ["codex", "claude", "agy"],
+      claude: ["codex", "agy"],
+      codex: ["claude", "agy"],
+    })) {
+      const plugin = host === "antigravity" ? repoRoot : path.join(stage, "plugins", `${host}-handoff`);
+      const config = { antigravity: "mcp_config.json", claude: ".mcp.json", codex: "mcp.json" }[host];
+      const serverArgs = read(path.join(plugin, config)).mcpServers.handoff.args
+        .map((arg) => arg.replace(/^\$\{(?:CLAUDE_)?PLUGIN_ROOT\}/, plugin));
+      const client = new McpStdioClient(env, serverArgs);
+      clients.push(client);
+      const initialized = await client.request("initialize", { protocolVersion: "2025-03-26" });
+      assert.equal(initialized.result.serverInfo.name, host === "antigravity" ? "agy-handoff" : `${host}-handoff`);
+      const doctor = await client.callTool("handoff_doctor");
+      assert.equal(doctor.data.host, host);
+      assert.deepEqual(doctor.data.defaultGroupEngines, peers);
+      const review = await client.callTool("handoff_cross_review", {
+        cwd: dir, scope: "custom", structured: true, prompt: "portable review",
+      });
+      assert.equal(review.isError, false, review.text);
+      assert.deepEqual(review.data.requestedEngines, peers);
+      assert.deepEqual(review.data.participatingEngines, peers);
+      assert.equal(review.data.architecture, `${peers.length}-to-1`);
+      assert.equal(review.data.synthesizerHost, host);
+      assert.equal(review.data.structuredSynthesis.verificationStages.semanticVerification.semanticallyVerified, false);
+      const direct = await client.callTool("handoff_review", {
+        cwd: dir, engine: peers[0], scope: "custom", structured: true, prompt: "single review",
+      });
+      assert.equal(direct.isError, false, direct.text);
+      assert.match(direct.data.structuredReview.summary, /nested handoff blocked/);
+      const delegate = await client.callTool("handoff_delegate", {
+        cwd: dir, engine: peers[0], prompt: "read-only delegation", background: true,
+      });
+      assert.equal(delegate.isError, false, delegate.text);
+      for (let i = 0; i < 10; i += 1) {
+        const status = await client.callTool("handoff_job_status", { jobId: delegate.data.jobId, waitSec: 1 });
+        if (status.data.status === "completed") break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const result = await client.callTool("handoff_job_result", { jobId: delegate.data.jobId });
+      assert.equal(result.data.status, "completed", result.text);
+      assert.match(result.data.output, /nested handoff blocked/);
+    }
+
+    const claude = clients[1];
+    const defaultPlan = await claude.callTool("handoff_plan", { goal: "portable design", cwd: dir });
+    assert.equal(defaultPlan.isError, false, defaultPlan.text);
+    assert.deepEqual(defaultPlan.data.participatingEngines, ["codex", "agy"]);
+    const explicit = await claude.callTool("handoff_plan", {
+      goal: "portable design", cwd: dir, engines: ["claude", "agy"],
+    });
+    assert.equal(explicit.isError, false, explicit.text);
+    assert.deepEqual(explicit.data.participatingEngines, ["claude", "agy"]);
+    assert.deepEqual(Object.keys(explicit.data.structuredPlan.verificationStages.structuredJsonParse), ["claude", "agy"]);
+    for (const client of clients.slice(1)) {
+      const write = await client.callTool("handoff_delegate", {
+        cwd: dir, engine: "agy", mode: "workspace-write", prompt: "try writing",
+      });
+      assert.equal(write.isError, true);
+      assert.match(write.text, /explicit user approval/);
+    }
+
+    const approvedWrite = await clients[2].callTool("handoff_delegate", {
+      cwd: dir, engine: "claude", mode: "workspace-write", confirmWorkspaceWrite: true,
+      prompt: "approved fixture",
+    });
+    assert.equal(approvedWrite.isError, false, approvedWrite.text);
+    assert.equal(approvedWrite.data.permissionBoundary.osSandboxed, false);
+    assert.match(approvedWrite.data.permissionBoundary.warning, /Bash runs without an OS/);
+
+    const duplicateArgs = { cwd: dir, scope: "custom", engines: ["agy"], prompt: "duplicate fixture" };
+    const [first, duplicate] = await Promise.all([
+      claude.callTool("handoff_cross_review", duplicateArgs),
+      claude.callTool("handoff_cross_review", duplicateArgs),
+    ]);
+    assert.equal(first.isError, false, first.text);
+    assert.equal(duplicate.isError, true);
+    assert.match(duplicate.text, /identical handoff is already running/);
+    const bgArgs = { cwd: dir, engine: "agy", prompt: "duplicate fixture", background: true };
+    const background = await claude.callTool("handoff_delegate", bgArgs);
+    const bgDuplicate = await claude.callTool("handoff_delegate", { ...bgArgs, background: false });
+    assert.equal(background.isError, false);
+    assert.match(bgDuplicate.text, /identical handoff is already running/);
+    assert.ok(bgDuplicate.text.includes(background.data.jobId));
+    await claude.callTool("handoff_job_cancel", { jobId: background.data.jobId });
+
+    const partial = await claude.callTool("handoff_cross_review", {
+      cwd: dir, scope: "custom", structured: true, prompt: "quota fixture",
+    });
+    assert.equal(partial.isError, false, partial.text);
+    assert.equal(partial.data.partial, true);
+    assert.equal(partial.data.architecture, "1-to-1");
+    assert.equal(partial.data.results.agy.failureReason, "quota");
+    const invalid = await claude.callTool("handoff_cross_review", {
+      cwd: dir, scope: "custom", structured: true, prompt: "invalid fixture",
+    });
+    assert.deepEqual(invalid.data.participatingEngines, ["codex"]);
+    assert.match(invalid.data.structuredSynthesis.parseErrors.agy, /findings/);
+    const noCli = new McpStdioClient({
+      ...env, AGY_HANDOFF_CODEX_BIN: path.join(dir, "missing"), AGY_HANDOFF_AGY_BIN: "none",
+    }, [serverPath, "--host", "claude"]);
+    clients.push(noCli);
+    const unavailable = await noCli.callTool("handoff_plan", { cwd: dir, goal: "portable design" });
+    assert.equal(unavailable.isError, true);
+    assert.equal(unavailable.data.architecture, "0-to-1");
+    assert.equal(unavailable.data.results.agy.skipped, true);
+    assert.match(unavailable.data.results.codex.reason, /not installed/);
+  } finally {
+    await Promise.allSettled(clients.map((client) => client.close()));
+    fs.rmSync(dir, RM_OPTS);
+  }
+});
+
+test("host-aware parallel plan retains a successful result when an engine times out", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "handoff-host-timeout-"));
+  const slowAgy = createFakeExecutable(dir, "agy-slow", "setInterval(() => {}, 1000);");
+  const client = new McpStdioClient({
+    AGY_HANDOFF_JOBS_DIR: path.join(dir, "jobs"),
+    AGY_HANDOFF_CONFIG: path.join(dir, "config.json"),
+    AGY_HANDOFF_CODEX_BIN: createHostEngine(dir, "codex"),
+    AGY_HANDOFF_AGY_BIN: slowAgy,
+  }, [serverPath, "--host", "claude"]);
+  try {
+    const plan = await client.callTool("handoff_plan", { cwd: dir, goal: "portable design", timeoutSec: 10 });
+    assert.equal(plan.isError, false, plan.text);
+    assert.equal(plan.data.partial, true);
+    assert.deepEqual(plan.data.participatingEngines, ["codex"]);
+    assert.equal(plan.data.results.agy.failureReason, "timeout");
+  } finally {
+    await client.close().catch(() => {});
+    fs.rmSync(dir, RM_OPTS);
   }
 });
