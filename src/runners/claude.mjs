@@ -7,9 +7,14 @@ import {
   VALID_REVIEW_STYLES,
   buildAdversarialReviewPrompt,
   buildStandardReviewPrompt,
+  compareSemver,
+  detectMissingFlags,
   findBinary,
   getBinaryVersion,
+  getHelpOutput,
   inspectBinary,
+  isCliFlagCompatibilityError,
+  parseSemver,
   runCommand,
   truncateOutput,
   validateCwd,
@@ -19,6 +24,21 @@ import {
   validateTimeoutSec,
 } from "./common.mjs";
 import { createEventStreamParser } from "../events.mjs";
+
+export const MIN_CLAUDE_VERSION = "2.1.259";
+export const REQUIRED_CLAUDE_FLAGS = [
+  "--print",
+  "--output-format",
+  "--verbose",
+  "--permission-mode",
+  "--permission-prompts",
+  "--restricted",
+  "--strict-mcp-config",
+  "--tools",
+  "--allowedTools",
+  "--disallowedTools",
+  "--effort",
+];
 
 const ALLOWED_MODES = new Set(["read-only", "workspace-write"]);
 const ALLOWED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
@@ -49,9 +69,59 @@ const READ_ONLY_DISALLOWED_TOOLS = [
 ].join(",");
 
 const WORKSPACE_WRITE_TOOLS = "Read,Edit,Write,Grep,Glob,Bash";
+export const WORKSPACE_WRITE_DISALLOWED_TOOLS = [
+  "Bash(sudo *)",
+  "Bash(git push)",
+  "Bash(git push *)",
+].join(",");
 
 export function findClaudeBinary() {
   return findBinary("claude", "AGY_HANDOFF_CLAUDE_BIN");
+}
+
+function evaluateClaudeCompatibility(version, helpText) {
+  const versionSemver = parseSemver(version);
+  const minSemver = parseSemver(MIN_CLAUDE_VERSION);
+  const hasHelp = Boolean(helpText && helpText.trim());
+  const missingFlags = hasHelp
+    ? detectMissingFlags(helpText, REQUIRED_CLAUDE_FLAGS)
+    : [];
+
+  if (!versionSemver && !hasHelp) {
+    return {
+      minVersion: MIN_CLAUDE_VERSION,
+      compatible: null,
+      missingFlags: [],
+      compatibilityNote: null,
+    };
+  }
+
+  const versionOk = versionSemver
+    ? compareSemver(versionSemver, minSemver) >= 0
+    : true;
+  const flagsOk = missingFlags.length === 0;
+  const compatible = versionOk && flagsOk;
+
+  let compatibilityNote = null;
+  if (!compatible) {
+    const reasons = [];
+    if (!versionOk && versionSemver) {
+      reasons.push(
+        `detected v${versionSemver.raw}, requires >= ${MIN_CLAUDE_VERSION}`,
+      );
+    }
+    if (!flagsOk) {
+      reasons.push(`missing required flags: ${missingFlags.join(", ")}`);
+    }
+    compatibilityNote = `Incompatible Claude Code CLI (${reasons.join("; ")}). Upgrade with \`claude update\` or \`npm install -g @anthropic-ai/claude-code@latest\`.`;
+  }
+
+  return {
+    minVersion: MIN_CLAUDE_VERSION,
+    compatible,
+    missingFlags,
+    compatibilityNote,
+  };
 }
 
 export async function inspectClaude() {
@@ -64,6 +134,10 @@ export async function inspectClaude() {
       binary: null,
       symlinkTarget: null,
       version: null,
+      minVersion: MIN_CLAUDE_VERSION,
+      compatible: null,
+      missingFlags: [],
+      compatibilityNote: null,
       installHint:
         "curl -fsSL https://claude.ai/install.sh | bash (or npm install -g @anthropic-ai/claude-code)",
     };
@@ -76,10 +150,18 @@ export async function inspectClaude() {
       binary: info.binary,
       symlinkTarget: info.symlinkTarget,
       version: null,
+      minVersion: MIN_CLAUDE_VERSION,
+      compatible: null,
+      missingFlags: [],
+      compatibilityNote: null,
       note: info.warning,
     };
   }
-  const version = await getBinaryVersion(info.binary, ["--version"]);
+  const [version, helpText] = await Promise.all([
+    getBinaryVersion(info.binary, ["--version"]),
+    getHelpOutput(info.binary, ["--help"]),
+  ]);
+  const compat = evaluateClaudeCompatibility(version, helpText);
   const home = os.homedir();
   const claudeDir = path.join(home, ".claude");
   const claudeJson = path.join(home, ".claude.json");
@@ -94,6 +176,7 @@ export async function inspectClaude() {
     binary: info.binary,
     symlinkTarget: info.symlinkTarget,
     version,
+    ...compat,
     authHint: hasAuthHint
       ? "ANTHROPIC_API_KEY or ~/.claude(.json) detected"
       : "No local auth hint detected (run `claude` to sign in or set ANTHROPIC_API_KEY)",
@@ -151,8 +234,14 @@ export function buildClaudeExecSpec({
     args.push(
       "--permission-mode",
       "acceptEdits",
+      "--restricted",
+      "--strict-mcp-config",
+      "--tools",
+      WORKSPACE_WRITE_TOOLS,
       "--allowedTools",
       WORKSPACE_WRITE_TOOLS,
+      "--disallowedTools",
+      WORKSPACE_WRITE_DISALLOWED_TOOLS,
     );
   }
 
@@ -235,6 +324,7 @@ export function parseClaudeJsonOutput(stdout) {
       text: "",
       sessionId: null,
       costUsd: null,
+      usage: null,
       isError: false,
       parseError: false,
     };
@@ -259,6 +349,8 @@ export function parseClaudeJsonOutput(stdout) {
               : typeof parsed.cost_usd === "number"
                 ? parsed.cost_usd
                 : null,
+          usage:
+            parsed.usage && typeof parsed.usage === "object" ? parsed.usage : null,
           isError: Boolean(parsed.is_error),
           parseError: false,
         };
@@ -268,6 +360,7 @@ export function parseClaudeJsonOutput(stdout) {
         text: trimmed,
         sessionId: null,
         costUsd: null,
+        usage: null,
         isError: false,
         parseError: trimmed.startsWith("{") || trimmed.startsWith("["),
       };
@@ -282,6 +375,7 @@ export function parseClaudeJsonOutput(stdout) {
   let validLines = 0;
   let sessionId = null;
   let costUsd = null;
+  let usage = null;
   let isError = false;
   let resultText = null;
   let lastAssistantText = null;
@@ -312,6 +406,9 @@ export function parseClaudeJsonOutput(stdout) {
     } else if (typeof ev.cost_usd === "number") {
       costUsd = ev.cost_usd;
     }
+    if (ev.usage && typeof ev.usage === "object") {
+      usage = ev.usage;
+    }
 
     if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
       const texts = ev.message.content
@@ -337,6 +434,7 @@ export function parseClaudeJsonOutput(stdout) {
       text: trimmed,
       sessionId: null,
       costUsd: null,
+      usage: null,
       isError: false,
       parseError: trimmed.startsWith("{") || trimmed.startsWith("["),
     };
@@ -347,6 +445,7 @@ export function parseClaudeJsonOutput(stdout) {
       text: lastAssistantText || trimmed,
       sessionId,
       costUsd,
+      usage,
       isError,
       parseError: true,
     };
@@ -356,6 +455,7 @@ export function parseClaudeJsonOutput(stdout) {
     text: resultText ?? lastAssistantText ?? trimmed,
     sessionId,
     costUsd,
+    usage,
     isError,
     parseError: false,
   };
@@ -402,6 +502,10 @@ async function executeClaude(spec, options) {
     rawOutput = `Claude Code returned malformed or truncated JSON output.\n\n${parsed.text || res.stderr}`;
   } else {
     rawOutput = parsed.text || res.stderr;
+    if (!res.ok && isCliFlagCompatibilityError(res.stderr)) {
+      const hint = `Unsupported or outdated Claude Code CLI flags. agy-handoff requires Claude Code CLI >= ${MIN_CLAUDE_VERSION}. Run \`claude update\` (or \`npm install -g @anthropic-ai/claude-code@latest\`) and verify with \`handoff_doctor\`.`;
+      rawOutput = rawOutput ? `${rawOutput}\n\n${hint}` : hint;
+    }
   }
 
   return {
@@ -413,6 +517,7 @@ async function executeClaude(spec, options) {
     durationMs: res.durationMs,
     sessionId: parsed.sessionId,
     costUsd: parsed.costUsd,
+    usage: parsed.usage || null,
     output: truncateOutput(rawOutput),
     stderr: ok ? "" : res.stderr,
   };

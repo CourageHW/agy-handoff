@@ -299,6 +299,12 @@ export const TOOLS = [
           default: 10,
           description: "Maximum number of recent activity events to return.",
         },
+        includeStats: {
+          type: "boolean",
+          default: false,
+          description:
+            "When jobId is omitted, include aggregated usage and performance stats over retained jobs.",
+        },
       },
       additionalProperties: false,
     },
@@ -445,6 +451,8 @@ async function runTrackedForeground(
       exitCode: result.exitCode,
       error: result.ok ? null : result.stderr || null,
       sessionId: result.sessionId || null,
+      costUsd: typeof result.costUsd === "number" ? result.costUsd : null,
+      usage: result.usage || null,
     });
     return {
       ...result,
@@ -564,10 +572,17 @@ export async function handleToolCall(
 
     case "handoff_delegate": {
       const { engine, background = false } = args;
+      const mode = args.mode || "read-only";
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
       const resolvedCwd = validateCwd(args.cwd);
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
+      const sandboxModel =
+        mode === "workspace-write"
+          ? engine === "codex"
+            ? "os-sandbox (workspace-write)"
+            : "restricted-file-tools + acceptEdits + unsandboxed-bash"
+          : undefined;
 
       const resolved = resolveEngineConfig("delegate", engine, {
         model: args.model,
@@ -575,6 +590,7 @@ export async function handleToolCall(
       });
       const effectiveArgs = {
         ...args,
+        mode,
         cwd: resolvedCwd,
         skipGitRepoCheck,
         ephemeral: false,
@@ -585,13 +601,14 @@ export async function handleToolCall(
       };
 
       if (background) {
+        let started;
         if (engine === "codex") {
           const binary = findCodexBinary();
           if (!binary) throw new Error("Codex CLI (`codex`) not found in PATH.");
           const jobId = jobManager.allocateJobId("codex");
           const outputFile = args.sessionId ? null : jobManager.outputFilePath(jobId);
           const spec = buildCodexExecSpec({ ...effectiveArgs, outputFile });
-          return jobManager.startJob({
+          started = jobManager.startJob({
             jobId,
             engine: "codex",
             action: "delegate",
@@ -605,25 +622,27 @@ export async function handleToolCall(
             model: resolved.model || null,
             effort: resolved.effort || null,
           });
+        } else {
+          const binary = findClaudeBinary();
+          if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
+          const spec = buildClaudeExecSpec(effectiveArgs);
+          started = jobManager.startJob({
+            engine: "claude",
+            action: "delegate",
+            command: binary,
+            args: spec.args,
+            cwd: spec.cwd,
+            stdin: spec.stdin,
+            timeoutMs: (timeoutSec || 600) * 1000,
+            parseMode: "claude-json",
+            model: resolved.model || null,
+            effort: resolved.effort || null,
+          });
         }
-        const binary = findClaudeBinary();
-        if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
-        const spec = buildClaudeExecSpec(effectiveArgs);
-        return jobManager.startJob({
-          engine: "claude",
-          action: "delegate",
-          command: binary,
-          args: spec.args,
-          cwd: spec.cwd,
-          stdin: spec.stdin,
-          timeoutMs: (timeoutSec || 600) * 1000,
-          parseMode: "claude-json",
-          model: resolved.model || null,
-          effort: resolved.effort || null,
-        });
+        return sandboxModel ? { ...started, sandboxModel } : started;
       }
 
-      return runTrackedForeground(
+      const result = await runTrackedForeground(
         jobManager,
         {
           engine,
@@ -638,9 +657,11 @@ export async function handleToolCall(
             ? runCodexExec({ ...effectiveArgs, onEvent })
             : runClaudeExec({ ...effectiveArgs, onEvent }),
       );
+      return sandboxModel ? { ...result, sandboxModel } : result;
     }
 
     case "handoff_cross_review": {
+      const startedAt = Date.now();
       const codexBin = findCodexBinary();
       const claudeBin = findClaudeBinary();
       if (!codexBin && !claudeBin) {
@@ -775,14 +796,23 @@ export async function handleToolCall(
       }
 
       const [codexResult, claudeResult] = await Promise.all(tasks);
-      const ok = Boolean(
-        (!codexResult.skipped && codexResult.ok) ||
-          (!claudeResult.skipped && claudeResult.ok),
-      );
+      const allResults = [codexResult, claudeResult];
+      const enginesAttempted = allResults.filter((r) => !r.skipped).length;
+      const enginesSucceeded = allResults.filter((r) => !r.skipped && r.ok).length;
+      const enginesFailed = allResults.filter((r) => !r.skipped && !r.ok).length;
+      const enginesSkipped = allResults.filter((r) => r.skipped).length;
+      const ok = enginesSucceeded > 0;
       return {
         ok,
         style,
         scope,
+        summary: {
+          totalDurationMs: Date.now() - startedAt,
+          enginesAttempted,
+          enginesSucceeded,
+          enginesFailed,
+          enginesSkipped,
+        },
         resolvedModels: {
           codex: codexCfg,
           claude: claudeCfg,
@@ -806,7 +836,10 @@ export async function handleToolCall(
           eventsLimit: args.eventsLimit || 10,
         });
       }
-      return { jobs: jobManager.listJobs(args.limit || 20) };
+      const jobs = jobManager.listJobs(args.limit || 20);
+      return args.includeStats
+        ? { jobs, stats: jobManager.getStats({ limit: 100 }) }
+        : { jobs };
     }
 
     case "handoff_job_result": {
@@ -1100,12 +1133,17 @@ function startStdioServer() {
 // Run stdio server only when executed directly.
 function isDirectExecution() {
   if (!process.argv[1]) return false;
+  let entryPath;
   try {
-    const resolved = fs.realpathSync(path.resolve(process.argv[1]));
-    return import.meta.url === pathToFileURL(resolved).href;
+    entryPath = fs.realpathSync(path.resolve(process.argv[1]));
   } catch {
-    return import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;
+    entryPath = path.resolve(process.argv[1]);
   }
+  const entryUrl = pathToFileURL(entryPath).href;
+  if (process.platform === "win32") {
+    return import.meta.url.toLowerCase() === entryUrl.toLowerCase();
+  }
+  return import.meta.url === entryUrl;
 }
 
 if (isDirectExecution()) {

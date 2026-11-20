@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverPath = path.resolve(__dirname, "../src/mcp-server.mjs");
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
 
 function createFakeExecutable(dir, name, jsSource) {
   const scriptPath = path.join(dir, `${name}.mjs`);
@@ -17,7 +18,11 @@ function createFakeExecutable(dir, name, jsSource) {
   });
   if (process.platform === "win32") {
     const cmdPath = path.join(dir, `${name}.cmd`);
-    fs.writeFileSync(cmdPath, `@"%~dp0\\${name}.mjs" %*\r\n`, "utf8");
+    fs.writeFileSync(
+      cmdPath,
+      `@"${process.execPath}" "%~dp0\\${name}.mjs" %*\r\n`,
+      "utf8",
+    );
     return cmdPath;
   }
   return scriptPath;
@@ -128,7 +133,7 @@ test("MCP stdio server handles initialize, tools/list, and handoff_doctor", asyn
     assert.equal(doctorPayload.modelDefaults.review.claude.model, "claude-opus-5-5");
     assert.equal(doctorPayload.modelDefaults.review.claude.effort, "high");
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });
 
@@ -201,7 +206,7 @@ test("MCP stdio server supports handoff_config get, set, and reset", async () =>
     assert.equal(afterReset.effective.review.codex.model, "gpt-6.2-sol");
     assert.equal(afterReset.effective.review.codex.modelSource, "builtin");
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });
 
@@ -248,7 +253,7 @@ test("MCP stdio server validates arguments strictly and handles JSON-RPC batches
     assert.equal(batch[2].result.isError, true);
     assert.match(batch[2].result.content[0].text, /Unknown argument/i);
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });
 
@@ -293,7 +298,7 @@ test("MCP handoff_cross_review sets ok=false and isError=true when all engines f
     assert.equal(payload.results.codex.ok, false);
     assert.equal(payload.results.claude.ok, false);
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });
 
@@ -342,7 +347,7 @@ test("MCP stdio server emits notifications/progress when progressToken is suppli
     assert.equal(payload.output, "All good");
     assert.ok(payload.jobId);
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });
 
@@ -430,6 +435,6 @@ test("MCP stdio server dispatches non-blocking requests and handles notification
     assert.equal(cancelledResp.result.isError, true);
     assert.match(cancelledResp.result.content[0].text, /canceled/i);
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });

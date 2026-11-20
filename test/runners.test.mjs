@@ -4,26 +4,34 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  buildCodexExecSpec,
-  buildCodexReviewSpec,
-  extractCodexSessionId,
-  runCodexExec,
-} from "../src/runners/codex.mjs";
-import {
+  MIN_CLAUDE_VERSION,
   buildClaudeExecSpec,
   buildClaudeReviewSpec,
+  inspectClaude,
   parseClaudeJsonOutput,
   runClaudeExec,
 } from "../src/runners/claude.mjs";
 import {
+  MIN_CODEX_VERSION,
+  buildCodexExecSpec,
+  buildCodexReviewSpec,
+  extractCodexSessionId,
+  inspectCodex,
+  runCodexExec,
+} from "../src/runners/codex.mjs";
+import {
+  compareSemver,
+  detectMissingFlags,
   findBinary,
   inspectBinary,
+  parseSemver,
   resolveSpawnSpec,
   runCommand,
   truncateOutput,
 } from "../src/runners/common.mjs";
 
 const tmpDir = os.tmpdir();
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
 
 function createFakeExecutable(dir, name, jsSource) {
   const scriptPath = path.join(dir, `${name}.mjs`);
@@ -33,7 +41,11 @@ function createFakeExecutable(dir, name, jsSource) {
   });
   if (process.platform === "win32") {
     const cmdPath = path.join(dir, `${name}.cmd`);
-    fs.writeFileSync(cmdPath, `@"%~dp0\\${name}.mjs" %*\r\n`, "utf8");
+    fs.writeFileSync(
+      cmdPath,
+      `@"${process.execPath}" "%~dp0\\${name}.mjs" %*\r\n`,
+      "utf8",
+    );
     return cmdPath;
   }
   return scriptPath;
@@ -287,7 +299,7 @@ test("inspectBinary detects inaccessible symlinks and resolves relative paths to
     } else {
       process.env[envKey] = prev;
     }
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -310,7 +322,7 @@ test("resolveSpawnSpec unwraps Windows npm .cmd shims to Node directly", () => {
     assert.deepEqual(spec.args, [targetJs, "--version"]);
     assert.equal(spec.shell, false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -320,6 +332,7 @@ test("parseClaudeJsonOutput parses single JSON, stream-json JSONL, and broken JS
       result: "No critical bugs found.",
       session_id: "sess_123",
       total_cost_usd: 0.042,
+      usage: { input_tokens: 12, output_tokens: 5 },
       is_error: false,
     }),
   );
@@ -327,6 +340,7 @@ test("parseClaudeJsonOutput parses single JSON, stream-json JSONL, and broken JS
     text: "No critical bugs found.",
     sessionId: "sess_123",
     costUsd: 0.042,
+    usage: { input_tokens: 12, output_tokens: 5 },
     isError: false,
     parseError: false,
   });
@@ -349,6 +363,7 @@ test("parseClaudeJsonOutput parses single JSON, stream-json JSONL, and broken JS
     text: "Stream final answer",
     sessionId: "sess_stream",
     costUsd: 0.011,
+    usage: null,
     isError: false,
     parseError: false,
   });
@@ -396,7 +411,7 @@ test("runClaudeExec streams events via onEvent and parses >135 KB JSON before tr
   } finally {
     if (prev === undefined) delete process.env.AGY_HANDOFF_CLAUDE_BIN;
     else process.env.AGY_HANDOFF_CLAUDE_BIN = prev;
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -428,7 +443,7 @@ test("runCodexExec streams JSONL events via onEvent and extracts thread_id", asy
   } finally {
     if (prev === undefined) delete process.env.AGY_HANDOFF_CODEX_BIN;
     else process.env.AGY_HANDOFF_CODEX_BIN = prev;
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -480,4 +495,118 @@ test("runCommand timeout terminates grandchild process tree and settles promptly
   assert.equal(res.timedOut, true);
   assert.equal(res.ok, false);
   assert.ok(elapsed < 4000, `Expected prompt timeout settle, took ${elapsed}ms`);
+});
+
+test("buildClaudeExecSpec hardens workspace-write with --restricted, --strict-mcp-config, and disallowed dangerous commands", () => {
+  const spec = buildClaudeExecSpec({
+    prompt: "Fix bug",
+    cwd: tmpDir,
+    mode: "workspace-write",
+  });
+  assert.ok(spec.args.includes("acceptEdits"));
+  assert.ok(spec.args.includes("--restricted"));
+  assert.ok(spec.args.includes("--strict-mcp-config"));
+  const disallowedIdx = spec.args.indexOf("--disallowedTools");
+  assert.notEqual(disallowedIdx, -1);
+  assert.match(spec.args[disallowedIdx + 1], /Bash\(sudo \*\)/);
+  assert.match(spec.args[disallowedIdx + 1], /Bash\(git push \*\)/);
+});
+
+test("parseSemver, compareSemver, detectMissingFlags, and CLI compatibility checks work accurately", async () => {
+  assert.deepEqual(parseSemver("2.1.325 (Claude Code)"), {
+    major: 2,
+    minor: 1,
+    patch: 325,
+    raw: "2.1.325",
+  });
+  assert.deepEqual(parseSemver("codex-cli 0.171.0"), {
+    major: 0,
+    minor: 171,
+    patch: 0,
+    raw: "0.171.0",
+  });
+  assert.equal(compareSemver(parseSemver("2.1.325"), parseSemver("2.1.259")), 1);
+  assert.equal(compareSemver(parseSemver("2.1.258"), parseSemver("2.1.259")), -1);
+  assert.equal(compareSemver(parseSemver("0.171.0"), parseSemver("0.171.0")), 0);
+
+  // Token boundary ensures -o does not falsely match --output
+  assert.deepEqual(detectMissingFlags("--output --permission-prompt", ["-o", "--permission-prompts"]), [
+    "-o",
+    "--permission-prompts",
+  ]);
+  assert.deepEqual(
+    detectMissingFlags("  -o, --output-last-message\n  --permission-prompts <t>", [
+      "-o",
+      "--permission-prompts",
+    ]),
+    [],
+  );
+
+  const dir = fs.mkdtempSync(path.join(tmpDir, "agy-handoff-compat-test-"));
+  const prevClaude = process.env.AGY_HANDOFF_CLAUDE_BIN;
+  const prevCodex = process.env.AGY_HANDOFF_CODEX_BIN;
+  try {
+    const oldClaude = createFakeExecutable(
+      dir,
+      "old-claude",
+      `
+      if (process.argv.includes("--version")) {
+        console.log("2.1.100 (Claude Code)");
+        process.exit(0);
+      }
+      if (process.argv.includes("--help")) {
+        console.log("Options:\\n  -p, --print\\n  --output-format <f>");
+        process.exit(0);
+      }
+      console.error("error: unknown option '--restricted'");
+      process.exit(2);
+      `,
+    );
+    const oldCodex = createFakeExecutable(
+      dir,
+      "old-codex",
+      `
+      if (process.argv.includes("--version")) {
+        console.log("codex-cli 0.120.0");
+        process.exit(0);
+      }
+      if (process.argv.includes("--help")) {
+        console.log("Usage: codex\\n  --json");
+        process.exit(0);
+      }
+      console.error("error: unexpected argument '--ephemeral'");
+      process.exit(2);
+      `,
+    );
+
+    process.env.AGY_HANDOFF_CLAUDE_BIN = oldClaude;
+    process.env.AGY_HANDOFF_CODEX_BIN = oldCodex;
+
+    const claudeInfo = await inspectClaude();
+    assert.equal(claudeInfo.minVersion, MIN_CLAUDE_VERSION);
+    assert.equal(claudeInfo.compatible, false);
+    assert.ok(claudeInfo.missingFlags.includes("--restricted"));
+    assert.ok(claudeInfo.missingFlags.includes("--permission-prompts"));
+    assert.match(claudeInfo.compatibilityNote, /claude update/);
+
+    const codexInfo = await inspectCodex();
+    assert.equal(codexInfo.minVersion, MIN_CODEX_VERSION);
+    assert.equal(codexInfo.compatible, false);
+    assert.ok(codexInfo.missingFlags.some((f) => f.includes("--ephemeral")));
+    assert.match(codexInfo.compatibilityNote, /@openai\/codex@latest/);
+
+    const claudeFail = await runClaudeExec({ prompt: "hi", cwd: dir });
+    assert.equal(claudeFail.ok, false);
+    assert.match(claudeFail.output, new RegExp(MIN_CLAUDE_VERSION.replace(/\./g, "\\.")));
+
+    const codexFail = await runCodexExec({ prompt: "hi", cwd: dir });
+    assert.equal(codexFail.ok, false);
+    assert.match(codexFail.output, new RegExp(MIN_CODEX_VERSION.replace(/\./g, "\\.")));
+  } finally {
+    if (prevClaude === undefined) delete process.env.AGY_HANDOFF_CLAUDE_BIN;
+    else process.env.AGY_HANDOFF_CLAUDE_BIN = prevClaude;
+    if (prevCodex === undefined) delete process.env.AGY_HANDOFF_CODEX_BIN;
+    else process.env.AGY_HANDOFF_CODEX_BIN = prevCodex;
+    fs.rmSync(dir, RM_OPTS);
+  }
 });

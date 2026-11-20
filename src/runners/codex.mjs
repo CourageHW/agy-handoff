@@ -8,10 +8,15 @@ import {
   VALID_REVIEW_STYLES,
   buildAdversarialReviewPrompt,
   buildStandardReviewPrompt,
+  compareSemver,
+  detectMissingFlags,
   findBinary,
   getBinaryVersion,
+  getHelpOutput,
   inspectBinary,
+  isCliFlagCompatibilityError,
   isInsideGitRepo,
+  parseSemver,
   runCommand,
   truncateOutput,
   validateCwd,
@@ -21,6 +26,28 @@ import {
   validateTimeoutSec,
 } from "./common.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "../events.mjs";
+
+export const MIN_CODEX_VERSION = "0.160.0";
+export const REQUIRED_CODEX_EXEC_FLAGS = [
+  "--sandbox",
+  "--json",
+  "--ephemeral",
+  "--color",
+  "--skip-git-repo-check",
+  "-o",
+];
+export const REQUIRED_CODEX_RESUME_FLAGS = [
+  "--json",
+  "--last",
+  "--skip-git-repo-check",
+  "-c",
+];
+export const REQUIRED_CODEX_REVIEW_FLAGS = [
+  "--uncommitted",
+  "--base",
+  "--commit",
+  "-c",
+];
 
 const ALLOWED_SANDBOX_MODES = new Set(["read-only", "workspace-write"]);
 const ALLOWED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -43,6 +70,66 @@ export function findCodexBinary() {
   return findBinary("codex", "AGY_HANDOFF_CODEX_BIN");
 }
 
+function evaluateCodexCompatibility(version, execHelp, resumeHelp, reviewHelp) {
+  const versionSemver = parseSemver(version);
+  const minSemver = parseSemver(MIN_CODEX_VERSION);
+  const hasExec = Boolean(execHelp && execHelp.trim());
+  const hasResume = Boolean(resumeHelp && resumeHelp.trim());
+  const hasReview = Boolean(reviewHelp && reviewHelp.trim());
+
+  const missingFlags = [
+    ...(hasExec
+      ? detectMissingFlags(execHelp, REQUIRED_CODEX_EXEC_FLAGS).map((f) => `exec:${f}`)
+      : []),
+    ...(hasResume
+      ? detectMissingFlags(resumeHelp, REQUIRED_CODEX_RESUME_FLAGS).map(
+          (f) => `exec resume:${f}`,
+        )
+      : []),
+    ...(hasReview
+      ? detectMissingFlags(reviewHelp, REQUIRED_CODEX_REVIEW_FLAGS).map(
+          (f) => `review:${f}`,
+        )
+      : []),
+  ];
+
+  if (!versionSemver && !hasExec && !hasResume && !hasReview) {
+    return {
+      minVersion: MIN_CODEX_VERSION,
+      compatible: null,
+      missingFlags: [],
+      compatibilityNote: null,
+    };
+  }
+
+  const versionOk = versionSemver
+    ? compareSemver(versionSemver, minSemver) >= 0
+    : true;
+  const flagsOk = missingFlags.length === 0;
+  const compatible = versionOk && flagsOk;
+
+  let compatibilityNote = null;
+  if (!compatible) {
+    const reasons = [];
+    if (!versionOk && versionSemver) {
+      reasons.push(
+        `detected v${versionSemver.raw}, requires >= ${MIN_CODEX_VERSION}`,
+      );
+    }
+    if (!flagsOk) {
+      reasons.push(`missing required flags: ${missingFlags.join(", ")}`);
+    }
+    compatibilityNote = `Incompatible Codex CLI (${reasons.join("; ")}). Upgrade with \`npm install -g @openai/codex@latest\`.`;
+  }
+
+  return {
+    minVersion: MIN_CODEX_VERSION,
+    compatible,
+    missingFlags,
+    compatibilityNote,
+  };
+}
+
 export async function inspectCodex() {
   const info = inspectBinary("codex", "AGY_HANDOFF_CODEX_BIN");
   if (!info.installed) {
@@ -53,6 +140,10 @@ export async function inspectCodex() {
       binary: null,
       symlinkTarget: null,
       version: null,
+      minVersion: MIN_CODEX_VERSION,
+      compatible: null,
+      missingFlags: [],
+      compatibilityNote: null,
       installHint: "npm install -g @openai/codex && codex login",
     };
   }
@@ -64,10 +155,20 @@ export async function inspectCodex() {
       binary: info.binary,
       symlinkTarget: info.symlinkTarget,
       version: null,
+      minVersion: MIN_CODEX_VERSION,
+      compatible: null,
+      missingFlags: [],
+      compatibilityNote: null,
       note: info.warning,
     };
   }
-  const version = await getBinaryVersion(info.binary, ["--version"]);
+  const [version, execHelp, resumeHelp, reviewHelp] = await Promise.all([
+    getBinaryVersion(info.binary, ["--version"]),
+    getHelpOutput(info.binary, ["exec", "--help"]),
+    getHelpOutput(info.binary, ["exec", "resume", "--help"]),
+    getHelpOutput(info.binary, ["review", "--help"]),
+  ]);
+  const compat = evaluateCodexCompatibility(version, execHelp, resumeHelp, reviewHelp);
   const authFile = path.join(
     process.env.CODEX_HOME || path.join(os.homedir(), ".codex"),
     "auth.json",
@@ -81,6 +182,7 @@ export async function inspectCodex() {
     binary: info.binary,
     symlinkTarget: info.symlinkTarget,
     version,
+    ...compat,
     authHint: hasAuthHint
       ? "OPENAI_API_KEY or ~/.codex/auth.json detected"
       : "No local auth hint detected (run `codex login` or set OPENAI_API_KEY)",
@@ -342,12 +444,16 @@ async function executeCodex(spec, options) {
   const lastMessage = readAndCleanupOutputFile(spec.outputFile);
   const jsonl = spec.jsonStream
     ? parseCodexJsonlOutput(res.stdout)
-    : { lastMessage: "", sessionId: null, error: null };
+    : { lastMessage: "", sessionId: null, error: null, usage: null };
 
-  const rawOutput =
+  let rawOutput =
     lastMessage ||
     jsonl.lastMessage ||
     (res.ok ? res.stdout : jsonl.error || res.stderr || res.stdout);
+  if (!res.ok && isCliFlagCompatibilityError(res.stderr)) {
+    const hint = `Unsupported or outdated Codex CLI flags. agy-handoff requires Codex CLI >= ${MIN_CODEX_VERSION}. Run \`npm install -g @openai/codex@latest\` and verify with \`handoff_doctor\`.`;
+    rawOutput = rawOutput ? `${rawOutput}\n\n${hint}` : hint;
+  }
   const output = truncateOutput(rawOutput || res.stderr);
   const sessionId =
     jsonl.sessionId || extractCodexSessionId(`${res.stderr}\n${res.stdout}`);
@@ -360,6 +466,7 @@ async function executeCodex(spec, options) {
     aborted: Boolean(res.aborted),
     durationMs: res.durationMs,
     sessionId,
+    usage: jsonl.usage || null,
     output,
     stderr: res.ok ? "" : res.stderr,
   };

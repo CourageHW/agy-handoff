@@ -268,6 +268,7 @@ export function parseClaudeStreamJsonLine(line) {
         kind: "result",
         sessionId: ev.session_id || null,
         costUsd: typeof ev.total_cost_usd === "number" ? ev.total_cost_usd : null,
+        usage: ev.usage && typeof ev.usage === "object" ? ev.usage : null,
         isError: Boolean(ev.is_error),
         numTurns: ev.num_turns ?? null,
         summary: ev.is_error
@@ -285,6 +286,7 @@ export function parseCodexJsonlOutput(stdout) {
   let sessionId = null;
   let lastMessage = "";
   let error = null;
+  let usage = null;
   let eventCount = 0;
   let parsedAnyJson = false;
 
@@ -305,6 +307,9 @@ export function parseCodexJsonlOutput(stdout) {
       lastMessage = ev.item.text.trim();
     } else if (ev.type === "turn.completed") {
       error = null;
+      if (ev.usage && typeof ev.usage === "object") {
+        usage = ev.usage;
+      }
     } else if (ev.type === "turn.failed" || ev.type === "error") {
       error = ev.error?.message || ev.message || error;
     }
@@ -314,6 +319,7 @@ export function parseCodexJsonlOutput(stdout) {
     lastMessage,
     sessionId,
     error,
+    usage,
     eventCount,
     parsedAnyJson,
   };

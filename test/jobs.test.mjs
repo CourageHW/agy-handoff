@@ -3,7 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { JobManager } from "../src/jobs.mjs";
+
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-job-test-"));
@@ -32,7 +35,7 @@ test("JobManager runs a background job, enforces private permissions, and flushe
       engine: "codex",
       action: "delegate",
       command: process.execPath,
-      args: ["-e", `process.stdout.write(${JSON.stringify(expected)})`],
+      args: ["-e", 'process.stdout.write("X".repeat(64 * 1024))'],
       cwd: dir,
     });
 
@@ -53,7 +56,7 @@ test("JobManager runs a background job, enforces private permissions, and flushe
     assert.equal(listed.length, 1);
     assert.equal(listed[0].jobId, started.jobId);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -114,7 +117,7 @@ test("JobManager captures trailing JSONL events without newline and respects eve
     assert.equal(res.sessionId, "thr_bg_99");
     assert.equal(res.output, "All green");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -142,7 +145,7 @@ test("JobManager marks claude-json job failed when is_error is true", async () =
     assert.equal(res.sessionId, "s1");
     assert.equal(res.output, "Quota exceeded");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -193,7 +196,7 @@ test("JobManager readOnly status leaves stale metadata untouched on disk and ref
     const res = jm.getResult(jobId);
     assert.equal(res.output, "SAFE_JOB_OUTPUT");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -207,7 +210,7 @@ test("JobManager rejects symlinked jobs directory", () => {
     fs.symlinkSync(realTarget, linkDir);
     assert.throws(() => new JobManager(linkDir), /cannot be a symlink/i);
   } finally {
-    fs.rmSync(base, { recursive: true, force: true });
+    fs.rmSync(base, RM_OPTS);
   }
 });
 
@@ -236,6 +239,122 @@ test("JobManager cancels a running job cleanly and supports shutdown", async () 
     }
     assert.equal(jm.activeChildren.has(started.jobId), false);
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
+  }
+});
+
+test("JobManager enforces timeout, handles concurrent jobs, recovers dead ownerPid, and computes read-only stats", async () => {
+  const dir = makeTempDir();
+  try {
+    const jm = new JobManager(dir);
+
+    // 1. Timeout handling
+    const timedOutJob = jm.startJob({
+      engine: "codex",
+      action: "delegate",
+      model: "gpt-6.2-sol",
+      command: process.execPath,
+      args: ["-e", "setTimeout(() => {}, 30000)"],
+      cwd: dir,
+      timeoutMs: 120,
+    });
+    const timedOutDone = await waitForStatus(
+      jm,
+      timedOutJob.jobId,
+      ["timed_out", "failed"],
+      6000,
+    );
+    assert.equal(timedOutDone.status, "timed_out");
+
+    // 2. Concurrent jobs (3 in parallel)
+    const j1 = jm.startJob({
+      engine: "codex",
+      action: "review",
+      model: "gpt-6.2-sol",
+      command: process.execPath,
+      args: [
+        "-e",
+        'console.log(JSON.stringify({type:"thread.started",thread_id:"t1"})); console.log(JSON.stringify({type:"turn.completed",usage:{input_tokens:150,output_tokens:40}})); console.log(JSON.stringify({type:"item.completed",item:{type:"agent_message",text:"ok1"}}));',
+      ],
+      cwd: dir,
+    });
+    const j2 = jm.startJob({
+      engine: "claude",
+      action: "review",
+      model: "claude-opus-5-5",
+      command: process.execPath,
+      args: [
+        "-e",
+        'console.log(JSON.stringify({type:"result",result:"ok2",session_id:"c2",total_cost_usd:0.05,usage:{input_tokens:300,output_tokens:80},is_error:false}));',
+      ],
+      cwd: dir,
+      parseMode: "claude-json",
+    });
+    const j3 = jm.startJob({
+      engine: "claude",
+      action: "delegate",
+      model: "claude-opus-5-5",
+      command: process.execPath,
+      args: ["-e", "process.exit(1)"],
+      cwd: dir,
+      parseMode: "claude-json",
+    });
+
+    const [d1, d2, d3] = await Promise.all([
+      waitForStatus(jm, j1.jobId, ["completed", "failed"]),
+      waitForStatus(jm, j2.jobId, ["completed", "failed"]),
+      waitForStatus(jm, j3.jobId, ["completed", "failed"]),
+    ]);
+    assert.equal(d1.status, "completed");
+    assert.equal(d2.status, "completed");
+    assert.equal(d3.status, "failed");
+
+    // 3. Dead ownerPid recovery (new JobManager instance after server restart)
+    const exited = spawnSync(process.execPath, ["-e", ""]);
+    const deadOwnerPid = exited.pid;
+    let pidIsDead = false;
+    try {
+      process.kill(deadOwnerPid, 0);
+    } catch {
+      pidIsDead = true;
+    }
+    if (pidIsDead) {
+      const orphanId = "codex-orphan-restart-1";
+      jm.writeMeta({
+        id: orphanId,
+        engine: "codex",
+        action: "delegate",
+        cwd: dir,
+        pid: deadOwnerPid,
+        ownerPid: deadOwnerPid,
+        status: "running",
+        startedAt: new Date(Date.now() - 5000).toISOString(),
+        finishedAt: null,
+        exitCode: null,
+      });
+      const jmRestarted = new JobManager(dir);
+      // readOnly preserves disk; non-readOnly marks orphaned job failed
+      assert.equal(jmRestarted.getStatus(orphanId, { readOnly: true }).status, "running");
+      const recovered = jmRestarted.getStatus(orphanId);
+      assert.equal(recovered.status, "failed");
+      assert.match(recovered.error, /exited unexpectedly/i);
+    }
+
+    // 4. Stats accuracy (read-only, factual reported metrics only)
+    const stats = jm.getStats();
+    assert.equal(stats.reportedMetricsOnly, true);
+    assert.ok(stats.analyzedJobs >= 4);
+    assert.equal(stats.byEngine.codex.completed, 1);
+    assert.equal(stats.byEngine.codex.timedOut, 1);
+    assert.equal(stats.byEngine.codex.reportedCostUsd, null);
+    assert.equal(stats.byEngine.codex.reportedTokens.input, 150);
+    assert.equal(stats.byEngine.codex.reportedTokens.output, 40);
+    assert.equal(stats.byEngine.claude.completed, 1);
+    assert.equal(stats.byEngine.claude.reportedCostUsd, 0.05);
+    assert.equal(stats.byEngine.claude.costReportedJobs, 1);
+    assert.equal(stats.byEngine.claude.reportedTokens.input, 300);
+    assert.equal(stats.byEngine.claude.reportedTokens.output, 80);
+  } finally {
+    fs.rmSync(dir, RM_OPTS);
   }
 });

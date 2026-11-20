@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { handleToolCall } from "./mcp-server.mjs";
+import { JobManager } from "./jobs.mjs";
 import { validateTimeoutSec } from "./runners/common.mjs";
 import { runWatch } from "./watch.mjs";
 
@@ -73,6 +74,7 @@ const COMMAND_ALLOWED_FLAGS = {
     "claude-effort",
   ]),
   jobs: new Set(["limit"]),
+  stats: new Set(["limit"]),
   watch: new Set(["once", "stream", "interval", "limit"]),
 };
 
@@ -85,7 +87,8 @@ Usage:
   agy-handoff delegate --engine <codex|claude> --prompt "<task>" [options]
   agy-handoff cross-review [options]
   agy-handoff models [show | set [scope] [engine] [model] [effort] | reset [scope]]
-  agy-handoff jobs [status <jobId> | result <jobId> | cancel <jobId>]
+  agy-handoff jobs [status <jobId> | result <jobId> | cancel <jobId> | stats [--limit <n>]]
+  agy-handoff stats [--limit <n>]
   agy-handoff watch [jobId] [--once] [--stream] [--interval <ms>]
 
 Common options:
@@ -243,11 +246,18 @@ async function main() {
       });
       break;
 
-    case "delegate":
+    case "delegate": {
+      const delegateEngine = flags.engine || "codex";
+      const delegateMode = flags.mode || "read-only";
+      if (delegateMode === "workspace-write" && delegateEngine === "claude") {
+        process.stderr.write(
+          "Warning: Claude Code workspace-write mode uses --restricted (confining file tools to cwd), but Bash runs without an OS filesystem/network sandbox.\n",
+        );
+      }
       result = await handleToolCall("handoff_delegate", {
-        engine: flags.engine || "codex",
+        engine: delegateEngine,
         prompt: flags.prompt || positional.join(" "),
-        mode: flags.mode || "read-only",
+        mode: delegateMode,
         model: flags.model,
         effort: flags.effort,
         sessionId: flags.session,
@@ -256,6 +266,7 @@ async function main() {
         timeoutSec,
       });
       break;
+    }
 
     case "cross-review":
       result = await handleToolCall("handoff_cross_review", {
@@ -328,6 +339,10 @@ async function main() {
         result = await handleToolCall("handoff_job_status", {
           limit: parseIntFlag("limit", flags.limit, 1, 100),
         });
+      } else if (sub === "stats") {
+        result = new JobManager().getStats({
+          limit: parseIntFlag("limit", flags.limit, 1, 500) ?? 100,
+        });
       } else if (sub === "status") {
         result = await handleToolCall("handoff_job_status", { jobId });
       } else if (sub === "result") {
@@ -337,6 +352,16 @@ async function main() {
       } else {
         throw new Error(`Unknown jobs subcommand: ${sub}`);
       }
+      break;
+    }
+
+    case "stats": {
+      if (positional.length > 0) {
+        throw new Error(`Unexpected arguments for stats: ${positional.join(" ")}`);
+      }
+      result = new JobManager().getStats({
+        limit: parseIntFlag("limit", flags.limit, 1, 500) ?? 100,
+      });
       break;
     }
   }

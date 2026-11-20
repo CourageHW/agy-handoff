@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   DEFAULT_TIMEOUT_MS,
+  renameSyncSafe,
   resolveSpawnSpec,
   terminateProcessTree,
   truncateOutput,
@@ -120,11 +121,37 @@ function waitForStreamFinish(stream) {
   });
 }
 
+function extractReportedTokens(usage) {
+  if (!usage || typeof usage !== "object") {
+    return null;
+  }
+  const input =
+    typeof usage.input_tokens === "number"
+      ? usage.input_tokens
+      : typeof usage.inputTokens === "number"
+        ? usage.inputTokens
+        : null;
+  const output =
+    typeof usage.output_tokens === "number"
+      ? usage.output_tokens
+      : typeof usage.outputTokens === "number"
+        ? usage.outputTokens
+        : null;
+  if (input === null && output === null) {
+    return null;
+  }
+  return {
+    input: input ?? 0,
+    output: output ?? 0,
+  };
+}
+
 export class JobManager {
   constructor(jobsDir) {
     this.jobsDir = getJobsDir(jobsDir);
     this.activeChildren = new Map();
     this.liveState = new Map();
+    this.cancelTimers = new Map();
   }
 
   validateJobId(jobId) {
@@ -167,7 +194,7 @@ export class JobManager {
         encoding: "utf8",
         mode: 0o600,
       });
-      fs.renameSync(tmp, file);
+      renameSyncSafe(tmp, file);
     } catch (err) {
       try {
         fs.rmSync(tmp, { force: true });
@@ -300,6 +327,8 @@ export class JobManager {
       model,
       effort,
       sessionId: null,
+      costUsd: null,
+      usage: null,
       pid: process.pid,
       ownerPid: process.pid,
       status: "running",
@@ -320,6 +349,8 @@ export class JobManager {
       currentActivity: "Starting...",
       eventCount: 0,
       sessionId: null,
+      costUsd: null,
+      usage: null,
       recentEvents: [],
       waiters: new Set(),
     };
@@ -341,6 +372,12 @@ export class JobManager {
       state.eventCount = ev.seq || state.eventCount + 1;
       if (ev.sessionId) {
         state.sessionId = ev.sessionId;
+      }
+      if (typeof ev.costUsd === "number") {
+        state.costUsd = ev.costUsd;
+      }
+      if (ev.usage && typeof ev.usage === "object") {
+        state.usage = ev.usage;
       }
       state.recentEvents.push(ev);
       if (state.recentEvents.length > 30) {
@@ -382,6 +419,8 @@ export class JobManager {
       exitCode = 0,
       error = null,
       sessionId = null,
+      costUsd = null,
+      usage = null,
     } = {}) => {
       if (finished) return;
       finished = true;
@@ -398,6 +437,9 @@ export class JobManager {
           meta.finishedAt = new Date().toISOString();
           meta.error = error;
           meta.sessionId = sessionId || state.sessionId || meta.sessionId;
+          meta.costUsd =
+            typeof costUsd === "number" ? costUsd : state.costUsd ?? meta.costUsd;
+          meta.usage = usage || state.usage || meta.usage || null;
           meta.currentActivity = state.currentActivity;
           meta.eventCount = state.eventCount;
           this.writeMeta(meta);
@@ -466,6 +508,8 @@ export class JobManager {
       model,
       effort,
       sessionId: null,
+      costUsd: null,
+      usage: null,
       pid: child.pid || null,
       ownerPid: process.pid,
       status: "running",
@@ -486,6 +530,8 @@ export class JobManager {
       currentActivity: "Starting...",
       eventCount: 0,
       sessionId: null,
+      costUsd: null,
+      usage: null,
       recentEvents: [],
       waiters: new Set(),
     };
@@ -503,6 +549,7 @@ export class JobManager {
     let lastMetaSyncAt = 0;
     let exitGraceTimer = null;
     let killEscalateTimer = null;
+    let hardSettleTimer = null;
 
     const parser =
       engine === "codex" || engine === "claude"
@@ -512,6 +559,12 @@ export class JobManager {
             state.eventCount = ev.seq || state.eventCount + 1;
             if (ev.sessionId) {
               state.sessionId = ev.sessionId;
+            }
+            if (typeof ev.costUsd === "number") {
+              state.costUsd = ev.costUsd;
+            }
+            if (ev.usage && typeof ev.usage === "object") {
+              state.usage = ev.usage;
             }
             state.recentEvents.push(ev);
             if (state.recentEvents.length > 30) {
@@ -588,6 +641,16 @@ export class JobManager {
               terminateProcessTree(child.pid, "SIGKILL");
             }, 2000);
             killEscalateTimer.unref();
+            hardSettleTimer = setTimeout(() => {
+              try {
+                child.stdout?.destroy();
+                child.stderr?.destroy();
+              } catch {
+                // ignore
+              }
+              void finalize("timed_out", exitCode ?? -1, "Job exceeded timeout limit.");
+            }, 3500);
+            hardSettleTimer.unref();
           }, timeoutMs)
         : null;
     if (timer) timer.unref();
@@ -598,6 +661,12 @@ export class JobManager {
       if (timer) clearTimeout(timer);
       if (exitGraceTimer) clearTimeout(exitGraceTimer);
       if (killEscalateTimer) clearTimeout(killEscalateTimer);
+      if (hardSettleTimer) clearTimeout(hardSettleTimer);
+      const cancelEscTimer = this.cancelTimers.get(id);
+      if (cancelEscTimer) {
+        clearTimeout(cancelEscTimer);
+        this.cancelTimers.delete(id);
+      }
 
       if (parser) {
         try {
@@ -628,12 +697,20 @@ export class JobManager {
         let finalStatus = status;
         let finalError = error;
         let parsedSessionId = state.sessionId;
+        let finalCostUsd = state.costUsd;
+        let finalUsage = state.usage;
 
         if (parseMode === "claude-json" && finalStatus === "completed") {
           const raw = readFileBounded(stdoutPath, MAX_JOB_LOG_BYTES);
           const parsed = parseClaudeJsonOutput(raw.text);
           if (parsed.sessionId) {
             parsedSessionId = parsed.sessionId;
+          }
+          if (typeof parsed.costUsd === "number") {
+            finalCostUsd = parsed.costUsd;
+          }
+          if (parsed.usage) {
+            finalUsage = parsed.usage;
           }
           if (stdoutTruncated || raw.truncated || parsed.parseError) {
             finalStatus = "failed";
@@ -642,12 +719,17 @@ export class JobManager {
             finalStatus = "failed";
             finalError = parsed.text || "Claude Code reported an error.";
           }
-        } else if (engine === "codex" && !parsedSessionId) {
+        } else if (engine === "codex" && (!parsedSessionId || !finalUsage)) {
           const rawOut = readFileBounded(stdoutPath, MAX_JOB_LOG_BYTES).text;
           const rawErr = readFileBounded(stderrPath, MAX_JOB_LOG_BYTES).text;
           const jsonl = parseCodexJsonlOutput(rawOut);
           parsedSessionId =
-            jsonl.sessionId || extractCodexSessionId(`${rawErr}\n${rawOut}`);
+            parsedSessionId ||
+            jsonl.sessionId ||
+            extractCodexSessionId(`${rawErr}\n${rawOut}`);
+          if (jsonl.usage) {
+            finalUsage = jsonl.usage;
+          }
         }
 
         const latest = this.readMeta(id) || meta;
@@ -657,6 +739,8 @@ export class JobManager {
           latest.currentActivity = state.currentActivity;
           latest.eventCount = state.eventCount;
           latest.sessionId = parsedSessionId || latest.sessionId;
+          latest.costUsd = finalCostUsd ?? latest.costUsd ?? null;
+          latest.usage = finalUsage || latest.usage || null;
           this.writeMeta(latest);
           return;
         }
@@ -669,6 +753,8 @@ export class JobManager {
         latest.currentActivity = state.currentActivity;
         latest.eventCount = state.eventCount;
         latest.sessionId = parsedSessionId || latest.sessionId;
+        latest.costUsd = finalCostUsd ?? latest.costUsd ?? null;
+        latest.usage = finalUsage || latest.usage || null;
         this.writeMeta(latest);
       } catch {
         // never let metadata write failure escape event handler
@@ -899,7 +985,8 @@ export class JobManager {
 
     let output = rawStdout;
     let sessionId = meta.sessionId || null;
-    let costUsd = null;
+    let costUsd = typeof meta.costUsd === "number" ? meta.costUsd : null;
+    let usage = meta.usage || null;
 
     if (meta.hasOutputFile) {
       const outPath = this.outputFilePath(meta.id);
@@ -919,13 +1006,15 @@ export class JobManager {
         output = parsed.text || rawStderr;
       }
       sessionId = parsed.sessionId || sessionId;
-      costUsd = parsed.costUsd;
+      costUsd = typeof parsed.costUsd === "number" ? parsed.costUsd : costUsd;
+      usage = parsed.usage || usage;
     } else if (meta.engine === "codex") {
       const jsonl = parseCodexJsonlOutput(rawStdout);
       sessionId =
         sessionId ||
         jsonl.sessionId ||
         extractCodexSessionId(`${rawStderr}\n${rawStdout}`);
+      usage = jsonl.usage || usage;
       if ((!meta.hasOutputFile || output === rawStdout) && jsonl.parsedAnyJson) {
         output =
           jsonl.lastMessage ||
@@ -947,11 +1036,219 @@ export class JobManager {
       finishedAt: meta.finishedAt,
       sessionId,
       costUsd,
+      usage,
       eventCount: meta.eventCount ?? 0,
       eventsPath: this.eventsPath(meta.id),
       output: truncateOutput(output),
       stderr: meta.status === "completed" ? "" : truncateOutput(rawStderr),
       error: meta.error,
+    };
+  }
+
+  getStats({ limit = 100 } = {}) {
+    const files = fs
+      .readdirSync(this.jobsDir)
+      .filter((f) => f.endsWith(".json"));
+    const metas = [];
+    for (const file of files) {
+      const jobId = file.slice(0, -5);
+      try {
+        const meta = this.readMeta(jobId, { readOnly: true });
+        if (meta) metas.push(meta);
+      } catch {
+        // skip corrupted or unreadable metadata
+      }
+    }
+    metas.sort((a, b) => (b.startedAt || "").localeCompare(a.startedAt || ""));
+    const sampled =
+      limit === null || limit < 0 ? metas : metas.slice(0, limit);
+
+    const byStatus = {
+      completed: 0,
+      failed: 0,
+      timed_out: 0,
+      canceled: 0,
+      running: 0,
+    };
+
+    const createEngineEntry = () => ({
+      count: 0,
+      sharePct: 0,
+      completed: 0,
+      failed: 0,
+      timedOut: 0,
+      canceled: 0,
+      running: 0,
+      avgDurationMs: null,
+      reportedCostUsd: null,
+      costReportedJobs: 0,
+      reportedTokens: {
+        input: 0,
+        output: 0,
+        jobsWithUsage: 0,
+      },
+      _durationSum: 0,
+      _durationCount: 0,
+      _costSum: 0,
+    });
+
+    const byEngine = {
+      codex: createEngineEntry(),
+      claude: createEngineEntry(),
+    };
+    const byModel = {};
+    const byAction = {};
+
+    for (const m of sampled) {
+      const status = m.status || "failed";
+      if (Object.prototype.hasOwnProperty.call(byStatus, status)) {
+        byStatus[status] += 1;
+      }
+
+      const engineKey = m.engine || "unknown";
+      if (!byEngine[engineKey]) {
+        byEngine[engineKey] = createEngineEntry();
+      }
+      const eng = byEngine[engineKey];
+      eng.count += 1;
+      if (status === "completed") eng.completed += 1;
+      else if (status === "failed") eng.failed += 1;
+      else if (status === "timed_out") eng.timedOut += 1;
+      else if (status === "canceled") eng.canceled += 1;
+      else if (status === "running") eng.running += 1;
+
+      const startMs = Date.parse(m.startedAt || "");
+      const endMs = m.finishedAt ? Date.parse(m.finishedAt) : NaN;
+      const elapsedMs =
+        Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs
+          ? endMs - startMs
+          : null;
+      if (elapsedMs !== null) {
+        eng._durationSum += elapsedMs;
+        eng._durationCount += 1;
+      }
+
+      if (typeof m.costUsd === "number" && Number.isFinite(m.costUsd)) {
+        eng._costSum += m.costUsd;
+        eng.costReportedJobs += 1;
+      }
+
+      const tokens = extractReportedTokens(m.usage);
+      if (tokens) {
+        eng.reportedTokens.input += tokens.input;
+        eng.reportedTokens.output += tokens.output;
+        eng.reportedTokens.jobsWithUsage += 1;
+      }
+
+      const modelKey = `${engineKey}:${m.model || "cli-default"}`;
+      if (!byModel[modelKey]) {
+        byModel[modelKey] = {
+          engine: engineKey,
+          model: m.model || null,
+          count: 0,
+          completed: 0,
+          failed: 0,
+          timedOut: 0,
+          canceled: 0,
+          avgDurationMs: null,
+          _durationSum: 0,
+          _durationCount: 0,
+        };
+      }
+      const modelEntry = byModel[modelKey];
+      modelEntry.count += 1;
+      if (status === "completed") modelEntry.completed += 1;
+      else if (status === "failed") modelEntry.failed += 1;
+      else if (status === "timed_out") modelEntry.timedOut += 1;
+      else if (status === "canceled") modelEntry.canceled += 1;
+      if (elapsedMs !== null) {
+        modelEntry._durationSum += elapsedMs;
+        modelEntry._durationCount += 1;
+      }
+
+      const actionKey = m.action || "unknown";
+      if (!byAction[actionKey]) {
+        byAction[actionKey] = {
+          count: 0,
+          completed: 0,
+          failed: 0,
+          timedOut: 0,
+          canceled: 0,
+        };
+      }
+      byAction[actionKey].count += 1;
+      if (status === "completed") byAction[actionKey].completed += 1;
+      else if (status === "failed") byAction[actionKey].failed += 1;
+      else if (status === "timed_out") byAction[actionKey].timedOut += 1;
+      else if (status === "canceled") byAction[actionKey].canceled += 1;
+    }
+
+    for (const eng of Object.values(byEngine)) {
+      eng.sharePct =
+        sampled.length > 0
+          ? Math.round((eng.count / sampled.length) * 1000) / 10
+          : 0;
+      eng.avgDurationMs =
+        eng._durationCount > 0
+          ? Math.round(eng._durationSum / eng._durationCount)
+          : null;
+      eng.reportedCostUsd =
+        eng.costReportedJobs > 0
+          ? Math.round(eng._costSum * 1_000_000) / 1_000_000
+          : null;
+      delete eng._durationSum;
+      delete eng._durationCount;
+      delete eng._costSum;
+    }
+
+    for (const modelEntry of Object.values(byModel)) {
+      modelEntry.avgDurationMs =
+        modelEntry._durationCount > 0
+          ? Math.round(modelEntry._durationSum / modelEntry._durationCount)
+          : null;
+      delete modelEntry._durationSum;
+      delete modelEntry._durationCount;
+    }
+
+    const finishedCount =
+      byStatus.completed + byStatus.failed + byStatus.timed_out + byStatus.canceled;
+    const successRatePct =
+      finishedCount > 0
+        ? Math.round((byStatus.completed / finishedCount) * 1000) / 10
+        : null;
+
+    const recentJobs = sampled.slice(0, 10).map((m) => {
+      const s = Date.parse(m.startedAt || "");
+      const e = m.finishedAt ? Date.parse(m.finishedAt) : Date.now();
+      return {
+        jobId: m.id,
+        engine: m.engine,
+        action: m.action,
+        model: m.model || null,
+        effort: m.effort || null,
+        status: m.status,
+        foreground: Boolean(m.foreground),
+        elapsedMs: Number.isFinite(s) && Number.isFinite(e) ? Math.max(0, e - s) : 0,
+        startedAt: m.startedAt,
+        costUsd: typeof m.costUsd === "number" ? m.costUsd : null,
+        usage: m.usage || null,
+      };
+    });
+
+    return {
+      jobsDir: this.jobsDir,
+      retainedJobs: metas.length,
+      analyzedJobs: sampled.length,
+      reportedMetricsOnly: true,
+      scopeNote:
+        "Metrics reflect retained job records on disk only. Tokens and cost are reported only when emitted by the underlying CLI; missing values are never estimated.",
+      byStatus,
+      finishedCount,
+      successRatePct,
+      byEngine,
+      byModel,
+      byAction,
+      recentJobs,
     };
   }
 
@@ -987,9 +1284,16 @@ export class JobManager {
     this.notifyWaiters(jobId);
 
     terminateProcessTree(child.pid, "SIGTERM");
-    setTimeout(() => {
-      terminateProcessTree(child.pid, "SIGKILL");
-    }, 2000).unref();
+    const existingTimer = this.cancelTimers.get(jobId);
+    if (existingTimer) clearTimeout(existingTimer);
+    const escTimer = setTimeout(() => {
+      this.cancelTimers.delete(jobId);
+      if (this.activeChildren.get(jobId) === child) {
+        terminateProcessTree(child.pid, "SIGKILL");
+      }
+    }, 2000);
+    escTimer.unref();
+    this.cancelTimers.set(jobId, escTimer);
 
     return {
       jobId: meta.id,
@@ -1000,6 +1304,10 @@ export class JobManager {
   }
 
   shutdown() {
+    for (const timer of this.cancelTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.cancelTimers.clear();
     for (const [jobId, child] of this.activeChildren.entries()) {
       try {
         const meta = this.readMeta(jobId);

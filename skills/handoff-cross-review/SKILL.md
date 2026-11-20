@@ -25,6 +25,8 @@ Run Codex and Claude Code independently in parallel and synthesize their finding
    - If one CLI is not installed, `handoff_cross_review` still runs the installed CLI and marks the missing one as `skipped`. Report the available review and briefly note the missing CLI install hint.
 
 3. **Synthesize the two reviews**:
-   - **Consensus findings** (flagged by both engines): prioritize these at the top.
-   - **Unique findings** (flagged by only one engine): verify against the actual source files to distinguish genuine catches from false positives.
-   - **Disagreements / Trade-offs**: summarize where the two engines took different architectural stances and give your recommendation.
+   Organize the unified report into four structured sections:
+   - **Consensus Findings**: Issues independently flagged by both engines (with highest severity/file/line references first).
+   - **Unique Findings**: Issues raised by only one engine.
+   - **Conflicts / Trade-offs**: Places where Codex and Claude disagreed on severity, root cause, or architectural direction, plus your recommendation.
+   - **Verified Findings**: Only after you directly read the cited local files and line ranges yourself, confirm which Consensus/Unique findings hold up in the actual codebase and dismiss any false positives. Never list a finding as Verified without checking the underlying source lines.

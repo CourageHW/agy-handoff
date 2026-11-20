@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { renameSyncSafe } from "./runners/common.mjs";
 
 export const BUILTIN_DEFAULTS = {
   codex: { model: "gpt-6.2-sol", effort: "high" },
@@ -149,7 +150,7 @@ export function saveConfig(config, overridePath) {
       encoding: "utf8",
       mode: 0o600,
     });
-    fs.renameSync(tmpPath, filePath);
+    renameSyncSafe(tmpPath, filePath);
   } catch (err) {
     try {
       fs.rmSync(tmpPath, { force: true });

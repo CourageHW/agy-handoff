@@ -11,6 +11,8 @@ import {
   updateConfig,
 } from "../src/config.mjs";
 
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
+
 function makeTempConfigPath() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-config-test-"));
   return { dir, file: path.join(dir, "config.json") };
@@ -40,7 +42,7 @@ test("resolveEngineConfig returns built-in defaults when no config file exists",
       effortSource: "builtin",
     });
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -128,7 +130,7 @@ test("updateConfig supports global defaults, per-command overrides, dual-engine,
     // Claude command override remains untouched
     assert.equal(resolveEngineConfig("review", "claude", {}, file).modelSource, "command");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -156,7 +158,7 @@ test("cli-default resolves to undefined model/effort with cli-default source", (
       },
     );
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });
 
@@ -217,6 +219,6 @@ test("updateConfig reset clears single command, single engine, or all settings",
     assert.equal(afterAll.effective.review.codex.model, "gpt-6.2-sol");
     assert.equal(afterAll.effective.review.claude.model, "claude-opus-5-5");
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, RM_OPTS);
   }
 });

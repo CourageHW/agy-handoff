@@ -4,7 +4,7 @@
 
 ## Operating Rules
 
-1. **Prefer read-only by default**: Always start reviews, investigations, and debugging handoffs in `read-only` mode. Only pass `mode: "workspace-write"` when the user explicitly asks the external CLI to modify files.
+1. **Prefer read-only by default**: Always start reviews, investigations, and debugging handoffs in `read-only` mode and never auto-escalate permissions. Only pass `mode: "workspace-write"` when the user explicitly asks and confirms that the external CLI should modify files (note: Codex uses OS sandboxing in `workspace-write`, whereas Claude Code restricts built-in file tools via `--restricted` + `acceptEdits` while `Bash` remains unsandboxed).
 2. **Pass the workspace root explicitly**: Always pass the active repository root in `cwd` so external CLIs inspect the right checkout.
 3. **Keep prompts self-contained**: Do not dump entire files into the prompt; give the goal, relevant file paths, constraints, and expected output format so the external CLI reads the repo directly.
 4. **Verify before retrying**: If a handoff fails because a binary or authentication is missing, run `handoff_doctor` once and report the exact setup command rather than retrying blindly.

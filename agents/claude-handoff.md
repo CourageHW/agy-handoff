@@ -15,7 +15,7 @@ You are a dedicated Antigravity subagent wrapping local **Anthropic Claude Code 
 
 ## Operating Rules
 
-1. Always default to `mode: "read-only"` unless the parent/user prompt explicitly asks for `workspace-write`.
+1. Always default to `mode: "read-only"` unless the parent/user prompt explicitly asks for and confirms `workspace-write`. Never auto-escalate permissions; remember `workspace-write` confines built-in file tools via `--restricted` + `acceptEdits` while `Bash` is unsandboxed.
 2. Pass the active repository root in `cwd`.
 3. Never use shell `sleep` to wait on background jobs; always use `handoff_job_status` with `waitSec` (up to `15`).
 

@@ -100,6 +100,7 @@ test("parseClaudeStreamJsonLine parses init, tool_use, text, and result events c
         result: "Done",
         session_id: "sess_1",
         total_cost_usd: 0.015,
+        usage: { input_tokens: 100, output_tokens: 25 },
         is_error: false,
         num_turns: 2,
       }),
@@ -109,6 +110,7 @@ test("parseClaudeStreamJsonLine parses init, tool_use, text, and result events c
         kind: "result",
         sessionId: "sess_1",
         costUsd: 0.015,
+        usage: { input_tokens: 100, output_tokens: 25 },
         isError: false,
         numTurns: 2,
         summary: "Completed (2 turns)",
@@ -129,16 +131,32 @@ test("parseCodexJsonlOutput handles whitespace messages and turn.completed clear
       type: "item.completed",
       item: { type: "agent_message", text: "   \n  " },
     }),
-    JSON.stringify({ type: "turn.completed" }),
+    JSON.stringify({
+      type: "turn.completed",
+      usage: { input_tokens: 200, output_tokens: 50 },
+    }),
   ].join("\n");
 
   assert.deepEqual(parseCodexJsonlOutput(out), {
     lastMessage: "Final answer",
     sessionId: "thr_abc",
     error: null,
+    usage: { input_tokens: 200, output_tokens: 50 },
     eventCount: 5,
     parsedAnyJson: true,
   });
+});
+
+test("createEventStreamParser drops overlong incomplete lines without corrupting subsequent events", () => {
+  const seen = [];
+  const parser = createEventStreamParser("codex", (ev) => seen.push(ev));
+  const huge = Buffer.alloc(600 * 1024, 0x61); // > 512 KB without newline
+  parser.push(huge);
+  parser.push(Buffer.from('\n{"type":"thread.started","thread_id":"thr_after_huge"}\n', "utf8"));
+  parser.flush();
+
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].sessionId, "thr_after_huge");
 });
 
 test("createEventStreamParser decodes split multibyte UTF-8 chunks and isolates callback errors", () => {

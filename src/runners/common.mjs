@@ -295,9 +295,10 @@ export function terminateProcessTree(pid, signal = "SIGTERM") {
   if (!pid || typeof pid !== "number") return;
   if (process.platform === "win32") {
     try {
+      // Windows console processes (like node.exe) ignore taskkill without /F.
       const killer = spawn(
         "taskkill",
-        ["/PID", String(pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])],
+        ["/PID", String(pid), "/T", "/F"],
         { stdio: "ignore", windowsHide: true },
       );
       killer.on("error", () => {});
@@ -318,6 +319,31 @@ export function terminateProcessTree(pid, signal = "SIGTERM") {
     process.kill(pid, signal);
   } catch {
     // ignore ESRCH/EPERM
+  }
+}
+
+const WIN_RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
+
+export function renameSyncSafe(src, dest) {
+  if (process.platform !== "win32") {
+    fs.renameSync(src, dest);
+    return;
+  }
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      fs.renameSync(src, dest);
+      return;
+    } catch (err) {
+      if (!WIN_RENAME_RETRY_CODES.has(err?.code) || attempt === maxAttempts) {
+        throw err;
+      }
+      try {
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      } catch {
+        // ignore if Atomics.wait is unavailable
+      }
+    }
   }
 }
 
@@ -556,6 +582,65 @@ export async function getBinaryVersion(binaryPath, args = ["--version"]) {
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith("WARNING:"));
   return lines[0] || combined.split(/\r?\n/)[0];
+}
+
+export function parseSemver(text) {
+  if (!text) return null;
+  const match = String(text).match(/\b(\d+)\.(\d+)\.(\d+)\b/);
+  if (!match) return null;
+  return {
+    major: Number.parseInt(match[1], 10),
+    minor: Number.parseInt(match[2], 10),
+    patch: Number.parseInt(match[3], 10),
+    raw: match[0],
+  };
+}
+
+export function compareSemver(a, b) {
+  const pa = typeof a === "string" ? parseSemver(a) : a;
+  const pb = typeof b === "string" ? parseSemver(b) : b;
+  if (!pa || !pb) return null;
+  for (const field of ["major", "minor", "patch"]) {
+    if (pa[field] < pb[field]) return -1;
+    if (pa[field] > pb[field]) return 1;
+  }
+  return 0;
+}
+
+export async function getHelpOutput(binaryPath, args = ["--help"]) {
+  if (!binaryPath) return "";
+  const res = await runCommand({
+    command: binaryPath,
+    args,
+    timeoutMs: 10_000,
+    truncateStdout: false,
+  });
+  return `${res.stdout || ""}\n${res.stderr || ""}`;
+}
+
+function escapeRegex(str) {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function detectMissingFlags(helpText, requiredFlags = []) {
+  const text = String(helpText || "");
+  const missing = [];
+  for (const flag of requiredFlags) {
+    const pattern = new RegExp(
+      `(?:^|[\\s,|([=])${escapeRegex(flag)}(?=$|[\\s,.)\\]=:<>\\[])`,
+    );
+    if (!pattern.test(text)) {
+      missing.push(flag);
+    }
+  }
+  return missing;
+}
+
+export function isCliFlagCompatibilityError(stderr) {
+  if (!stderr) return false;
+  return /unknown option|unrecognized option|unexpected argument|unknown flag/i.test(
+    String(stderr),
+  );
 }
 
 export function buildAdversarialReviewPrompt({ targetDescription, extraInstructions }) {

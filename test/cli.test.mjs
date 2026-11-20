@@ -9,6 +9,7 @@ import { JobManager } from "../src/jobs.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const cliPath = path.resolve(__dirname, "../src/cli.mjs");
+const RM_OPTS = { recursive: true, force: true, maxRetries: 10, retryDelay: 50 };
 
 function runCli(args, envOverrides = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -70,7 +71,7 @@ test("CLI models show/set/reset persists and resolves per-command defaults", () 
     assert.equal(json3.effective.review.codex.model, "gpt-6.2-sol");
     assert.equal(json3.effective.review.codex.modelSource, "builtin");
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });
 
@@ -108,7 +109,18 @@ test("CLI watch --once strips terminal escapes and rejects invalid jobId", async
     assert.match(watchRes.stdout, /\[DONE\]/);
     assert.match(watchRes.stdout, /Read: src\/cli\.mjs/);
     assert.ok(!watchRes.stdout.includes("\x1b[31m"));
+
+    const statsRes = runCli(["stats"], { PLUGIN_DATA: tmpDir });
+    assert.equal(statsRes.status, 0);
+    const statsJson = JSON.parse(statsRes.stdout);
+    assert.equal(statsJson.analyzedJobs, 1);
+    assert.equal(statsJson.byEngine.claude.completed, 1);
+    assert.equal(statsJson.reportedMetricsOnly, true);
+
+    const jobsStatsRes = runCli(["jobs", "stats"], { PLUGIN_DATA: tmpDir });
+    assert.equal(jobsStatsRes.status, 0);
+    assert.equal(JSON.parse(jobsStatsRes.stdout).analyzedJobs, 1);
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(tmpDir, RM_OPTS);
   }
 });

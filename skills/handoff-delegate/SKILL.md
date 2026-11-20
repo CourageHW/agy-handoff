@@ -12,8 +12,11 @@ Delegate focused tasks to local `codex` or `claude` CLIs safely and manage async
 
 ## Safety First
 
-- Default to `mode: "read-only"` for investigation, root-cause analysis, test-failure triage, and patch proposals.
-- Only use `mode: "workspace-write"` when the user explicitly requests that Codex or Claude Code directly edit files in the workspace.
+- Default to `mode: "read-only"` for investigation, root-cause analysis, test-failure triage, and patch proposals. Never silently escalate from `read-only` to `workspace-write`.
+- Only use `mode: "workspace-write"` when the user explicitly requests and confirms that Codex or Claude Code should directly edit files in the workspace.
+- Understand the engine sandbox difference before allowing writes:
+  - **Codex** runs inside its OS sandbox (`-s workspace-write`).
+  - **Claude Code** runs with `--permission-mode acceptEdits --restricted --strict-mcp-config --disallowedTools "Bash(sudo *),Bash(git push),Bash(git push *)"`, which confines built-in file tools (`Read`, `Edit`, `Write`, `Grep`, `Glob`) to `cwd`, but `Bash` itself has no OS filesystem/network sandbox.
 - Never run two `workspace-write` handoffs concurrently on the same files.
 
 ## Procedure
