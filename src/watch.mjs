@@ -310,9 +310,10 @@ export function formatStatsTable(stats) {
     "By Engine:",
   ];
 
-  for (const engineName of ["codex", "claude"]) {
+  for (const engineName of ["codex", "claude", "agy"]) {
     const e = s.byEngine?.[engineName];
     if (!e) continue;
+    if (engineName === "agy" && e.count === 0) continue;
     const avg = e.avgDurationMs !== null ? formatElapsed(e.avgDurationMs) : "n/a";
     const tokens =
       e.reportedTokens?.jobsWithUsage > 0

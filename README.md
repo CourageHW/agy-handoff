@@ -1,21 +1,21 @@
 # agy-handoff
 
-**agy-handoff** turns Google Antigravity (`agy` CLI, Antigravity IDE, and Antigravity 2.0) into a multi-engine orchestrator backed by local **OpenAI Codex** and **Anthropic Claude Code** CLIs over a zero-dependency stdio MCP server.
+**agy-handoff** turns Google Antigravity (`agy` CLI, Antigravity IDE, and Antigravity 2.0) into a **3-to-1 multi-agent orchestrator** backed by local **OpenAI Codex**, **Anthropic Claude Code**, and **Google Antigravity (`agy` — default `gemini-4-neon-high`)** over a zero-dependency stdio MCP server.
 
-It reuses whatever `codex` and `claude` sessions you are already signed into locally—no `npm install` step and no separate API keys—while addressing common multi-agent workflow failures: redundant repo scans, unverified tool claims, quota bottlenecks, context bleed across subagents, and silent CLI crashes.
+It reuses whatever `codex`, `claude`, and `agy` sessions you are already signed into locally—no `npm install` step and no separate API keys—while addressing common multi-agent workflow failures: redundant repo scans, unverified tool claims, 1-vs-1 deadlocks without a tie-breaker, quota bottlenecks, context bleed across subagents, and silent CLI crashes.
 
 <p align="center">
-  <img src="./assets/demo.gif" alt="agy-handoff Graphical Abstract — Parallel Codex & Claude Code Orchestration for Antigravity" width="900" />
+  <img src="./assets/demo.gif" alt="agy-handoff Graphical Abstract — 3-to-1 Parallel Codex, Claude Code & Antigravity Neon Orchestration" width="900" />
 </p>
 
 ## What agy-handoff Solves
 
 - **Zero npm dependencies**: Pure Node.js (`>= 18.18.0`) standard library modules.
+- **3-to-1 Verified Cross-Review (`codex` + `claude` + `agy` ➔ Session Model)**: Instead of a 2-engine review that can deadlock 1-vs-1, `handoff_cross_review` (and the 3 dedicated subagents `codex-handoff`, `claude-handoff`, `neon-handoff`) runs **OpenAI Codex (`gpt-6.2-sol` `high`)**, **Anthropic Claude Code (`claude-opus-5-5` `high`)**, and **Google Antigravity Agent (`gemini-4-neon-high` `high`)** in parallel, then hands all 3 independent reviews to **your current session's conversation model** for the final 3-to-1 synthesis (`3/3 Unanimous` & `2/3 Majority` Consensus, Tie-Breaks, Unique Findings, and 4-Stage Verification).
 - **Context-aware handoff**: Pass scoped `context: { files, summary, constraints, acceptanceCriteria }` (or `--files` / `--context-summary`) so external CLIs start directly on target code instead of wasting tokens re-scanning the repo.
 - **Factual execution evidence**: Every foreground and background run records observed tool calls, commands, inspected/modified files, and `git status` delta (`workspaceGitDelta`), flagging runs where no tools or edits occurred.
-- **Structured verified cross-review**: Run Codex and Claude Code in parallel via `handoff_cross_review` (even if one CLI is missing). Pass `structured: true` to enforce JSON schemas (`--output-schema` / `--json-schema`), compute Consensus / Severity Conflicts / Unique findings using both location and defect-token/concept overlap (`matchBasis` prevents merging unrelated bugs on nearby lines), and separate 4 verification stages (`cliExecution`, `structuredJsonParse`, `citationValidity`, and `semanticVerification: { semanticallyVerified: false }`).
 - **Safe read-only recovery & opt-in routing**: `handoff_doctor` recovers orphaned `running` jobs from crashed servers, `handoff_job_retry` replays failed `read-only` jobs (same engine or fallback engine, never `workspace-write`), and optional `engine: "auto"` balances usage across recent jobs and unhealthy streaks.
-- **Inspectable live progress & stats**: Dedicated `codex-handoff` / `claude-handoff` subagents for Antigravity's `/agents` (`Alt+J`) panes, plus `node src/cli.mjs watch` and `node src/cli.mjs stats --table`.
+- **Inspectable live progress & stats**: Three dedicated subagents (`codex-handoff`, `claude-handoff`, `neon-handoff`) for Antigravity's `/agents` (`Alt+J`) panes, plus `node src/cli.mjs watch` and `node src/cli.mjs stats --table`.
 
 ---
 
@@ -100,9 +100,11 @@ node src/cli.mjs stats --table   # ASCII usage, engine share, success rate, repo
 
 Built-in defaults when no override is supplied:
 
-- **Codex**: `gpt-6.2-sol` (`high`)
-- **Claude Code**: `claude-opus-5-5` (`high`)
-- **Auto-routing (`engine: "auto"`)**: `balanced` (least-used across last 20 jobs + automatic avoidance when one CLI failed 2+ consecutive recent runs). Explicit `engine: "codex"` or `"claude"` always takes precedence.
+- **Codex (`codex-handoff`)**: `gpt-6.2-sol` (`high`)
+- **Claude Code (`claude-handoff`)**: `claude-opus-5-5` (`high`)
+- **Antigravity 3rd Reviewer (`neon-handoff` / `engine: "agy"`)**: `gemini-4-neon-high` (`neon`, `high`)
+- **Lead Synthesizer (3-to-1)**: Your current session's active conversation model
+- **Auto-routing (`engine: "auto"`)**: `balanced` (least-used across last 20 jobs + automatic avoidance when one CLI failed 2+ consecutive recent runs). Explicit `engine: "codex"`, `"claude"`, or `"agy"` always takes precedence.
 
 Change defaults via `/agy-handoff:handoff-models`, `handoff_config`, or the CLI:
 

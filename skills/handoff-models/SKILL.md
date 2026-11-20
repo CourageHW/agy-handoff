@@ -13,6 +13,7 @@ Inspect and configure default `codex` and `claude` models and reasoning effort g
 Built-in plugin defaults:
 - **Codex**: `gpt-6.2-sol` (`effort: "high"`)
 - **Claude Code**: `claude-opus-5-5` (`effort: "high"`)
+- **Antigravity (`agy` 3rd reviewer)**: `gemini-4-neon-high` (`neon`, `effort: "high"`)
 
 ## Procedure
 

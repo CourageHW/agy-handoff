@@ -222,6 +222,7 @@ test("Plugin bundle structure and manifest references are complete", () => {
   for (const rel of [
     "agents/codex-handoff.md",
     "agents/claude-handoff.md",
+    "agents/neon-handoff.md",
     "rules/AGENTS.md",
     "skills/handoff-doctor/SKILL.md",
     "skills/handoff-review/SKILL.md",

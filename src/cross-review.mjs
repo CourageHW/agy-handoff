@@ -825,6 +825,9 @@ export function synthesizeStructuredCrossReview({
   claudeOutput,
   claudeStructured,
   claudeStatus = null,
+  agyOutput,
+  agyStructured,
+  agyStatus = null,
   cwd,
 }) {
   const resolvedCwd = path.resolve(cwd || process.cwd());
@@ -834,6 +837,11 @@ export function synthesizeStructuredCrossReview({
   } catch {
     // keep resolvedCwd
   }
+
+  const hasAgy =
+    agyStatus !== null ||
+    (agyStructured !== null && agyStructured !== undefined) ||
+    Boolean(agyOutput && String(agyOutput).trim());
 
   const normalizeEngineExec = (status, structuredObj, rawOutput) => {
     if (status && typeof status === "object") {
@@ -862,9 +870,12 @@ export function synthesizeStructuredCrossReview({
 
   const codexExec = normalizeEngineExec(codexStatus, codexStructured, codexOutput);
   const claudeExec = normalizeEngineExec(claudeStatus, claudeStructured, claudeOutput);
+  const agyExec = hasAgy
+    ? normalizeEngineExec(agyStatus, agyStructured, agyOutput)
+    : null;
 
   const parseSide = (execInfo, structuredObj, rawOutput) => {
-    if (!execInfo.attempted || !execInfo.ok) {
+    if (!execInfo || !execInfo.attempted || !execInfo.ok) {
       return { parsed: null, error: null, attempted: false };
     }
     if (structuredObj !== null && structuredObj !== undefined) {
@@ -882,6 +893,9 @@ export function synthesizeStructuredCrossReview({
 
   const codexParsed = parseSide(codexExec, codexStructured, codexOutput);
   const claudeParsed = parseSide(claudeExec, claudeStructured, claudeOutput);
+  const agyParsed = hasAgy
+    ? parseSide(agyExec, agyStructured, agyOutput)
+    : { parsed: null, error: null, attempted: false };
 
   const fileCache = new Map();
   const annotate = (findings) =>
@@ -896,79 +910,180 @@ export function synthesizeStructuredCrossReview({
   const claudeFindings = claudeParsed.parsed
     ? annotate(claudeParsed.parsed.findings)
     : [];
+  const agyFindings = agyParsed.parsed
+    ? annotate(agyParsed.parsed.findings)
+    : [];
 
   const matchedClaude = new Set();
+  const matchedAgy = new Set();
   const consensus = [];
   const conflicts = [];
   const uniqueCodex = [];
 
-  for (const cf of codexFindings) {
+  const findBestMatch = (anchor, candidates, usedSet) => {
     let bestIdx = -1;
     let bestMatch = null;
-    for (let j = 0; j < claudeFindings.length; j += 1) {
-      if (matchedClaude.has(j)) continue;
-      const candidate = evaluateFindingMatch(cf, claudeFindings[j], workspaceReal);
+    for (let j = 0; j < candidates.length; j += 1) {
+      if (usedSet.has(j)) continue;
+      const candidate = evaluateFindingMatch(anchor, candidates[j], workspaceReal);
       if (candidate.matched && (!bestMatch || candidate.score > bestMatch.score)) {
         bestMatch = candidate;
         bestIdx = j;
       }
     }
-    if (bestIdx !== -1 && bestMatch) {
-      matchedClaude.add(bestIdx);
-      const cl = claudeFindings[bestIdx];
-      const entry = {
-        file: normalizeFileKey(cf, workspaceReal) || cf.file || cl.file,
-        line: cf.line ?? cl.line,
-        severityMatch: cf.severity === cl.severity,
-        matchBasis: {
-          score: bestMatch.score,
-          lineDistance: bestMatch.lineDistance,
-          sharedTokens: bestMatch.sharedTokens,
-          sharedConcepts: bestMatch.sharedConcepts,
-        },
-        codex: cf,
-        claude: cl,
-      };
-      consensus.push(entry);
-      if (cf.severity !== cl.severity) {
-        conflicts.push({
-          file: entry.file,
-          line: entry.line,
-          codexSeverity: cf.severity,
-          claudeSeverity: cl.severity,
-          matchBasis: entry.matchBasis,
-          codex: cf,
-          claude: cl,
-        });
+    return { bestIdx, bestMatch };
+  };
+
+  const recordCluster = ({ cf = null, cl = null, ag = null, matchBasis }) => {
+    const members = [
+      ...(cf ? [{ engine: "codex", finding: cf }] : []),
+      ...(cl ? [{ engine: "claude", finding: cl }] : []),
+      ...(ag ? [{ engine: "agy", finding: ag }] : []),
+    ];
+    const agreedBy = members.map((m) => m.engine);
+    const primary = cf || cl || ag;
+    const severities = new Set(members.map((m) => m.finding.severity));
+    const severityMatch = severities.size === 1;
+    const activeEngineCount =
+      (codexParsed.parsed ? 1 : 0) +
+      (claudeParsed.parsed ? 1 : 0) +
+      (agyParsed.parsed ? 1 : 0);
+
+    const entry = {
+      file:
+        normalizeFileKey(primary, workspaceReal) ||
+        cf?.file ||
+        cl?.file ||
+        ag?.file ||
+        null,
+      line: cf?.line ?? cl?.line ?? ag?.line ?? null,
+      agreedBy,
+      agreementCount: agreedBy.length,
+      unanimous: activeEngineCount >= 2 && agreedBy.length === activeEngineCount,
+      severityMatch,
+      matchBasis,
+      ...(cf ? { codex: cf } : {}),
+      ...(cl ? { claude: cl } : {}),
+      ...(ag ? { agy: ag } : {}),
+    };
+    consensus.push(entry);
+
+    if (!severityMatch) {
+      conflicts.push({
+        file: entry.file,
+        line: entry.line,
+        agreedBy,
+        ...(cf ? { codexSeverity: cf.severity } : {}),
+        ...(cl ? { claudeSeverity: cl.severity } : {}),
+        ...(ag ? { agySeverity: ag.severity } : {}),
+        matchBasis,
+        ...(cf ? { codex: cf } : {}),
+        ...(cl ? { claude: cl } : {}),
+        ...(ag ? { agy: ag } : {}),
+      });
+    }
+  };
+
+  // Pass 1: Match Codex findings against Claude and/or AGY (3-way or 2-way).
+  for (const cf of codexFindings) {
+    const clMatch = findBestMatch(cf, claudeFindings, matchedClaude);
+    const agMatch = hasAgy
+      ? findBestMatch(cf, agyFindings, matchedAgy)
+      : { bestIdx: -1, bestMatch: null };
+
+    if (clMatch.bestIdx !== -1 || agMatch.bestIdx !== -1) {
+      let cl = null;
+      let ag = null;
+      if (clMatch.bestIdx !== -1) {
+        matchedClaude.add(clMatch.bestIdx);
+        cl = claudeFindings[clMatch.bestIdx];
       }
+      if (agMatch.bestIdx !== -1) {
+        matchedAgy.add(agMatch.bestIdx);
+        ag = agyFindings[agMatch.bestIdx];
+      } else if (cl && hasAgy) {
+        // Check transitive match through Claude finding
+        const transAg = findBestMatch(cl, agyFindings, matchedAgy);
+        if (transAg.bestIdx !== -1) {
+          matchedAgy.add(transAg.bestIdx);
+          ag = agyFindings[transAg.bestIdx];
+        }
+      }
+      const chosenBasis = clMatch.bestMatch || agMatch.bestMatch;
+      recordCluster({
+        cf,
+        cl,
+        ag,
+        matchBasis: {
+          score: chosenBasis.score,
+          lineDistance: chosenBasis.lineDistance,
+          sharedTokens: chosenBasis.sharedTokens,
+          sharedConcepts: chosenBasis.sharedConcepts,
+        },
+      });
     } else {
       uniqueCodex.push(cf);
     }
   }
 
-  const uniqueClaude = claudeFindings.filter((_, idx) => !matchedClaude.has(idx));
+  // Pass 2: Match remaining unmatched Claude findings against unmatched AGY findings.
+  const uniqueClaude = [];
+  for (let j = 0; j < claudeFindings.length; j += 1) {
+    if (matchedClaude.has(j)) continue;
+    const cl = claudeFindings[j];
+    if (hasAgy) {
+      const agMatch = findBestMatch(cl, agyFindings, matchedAgy);
+      if (agMatch.bestIdx !== -1) {
+        matchedClaude.add(j);
+        matchedAgy.add(agMatch.bestIdx);
+        const ag = agyFindings[agMatch.bestIdx];
+        recordCluster({
+          cf: null,
+          cl,
+          ag,
+          matchBasis: {
+            score: agMatch.bestMatch.score,
+            lineDistance: agMatch.bestMatch.lineDistance,
+            sharedTokens: agMatch.bestMatch.sharedTokens,
+            sharedConcepts: agMatch.bestMatch.sharedConcepts,
+          },
+        });
+        continue;
+      }
+    }
+    uniqueClaude.push(cl);
+  }
 
-  const allFindings = [...codexFindings, ...claudeFindings];
+  const uniqueAgy = hasAgy
+    ? agyFindings.filter((_, idx) => !matchedAgy.has(idx))
+    : [];
+
+  const allFindings = [...codexFindings, ...claudeFindings, ...agyFindings];
   const citationSummary = summarizeCitations(allFindings);
 
   return {
+    architecture: hasAgy ? "3-to-1" : "2-to-1",
     summaries: {
       codex: codexParsed.parsed?.summary || null,
       claude: claudeParsed.parsed?.summary || null,
+      ...(hasAgy ? { agy: agyParsed.parsed?.summary || null } : {}),
     },
     consensus,
     conflicts,
     uniqueCodex,
     uniqueClaude,
+    ...(hasAgy ? { uniqueAgy } : {}),
     parseErrors: {
       codex: codexParsed.error,
       claude: claudeParsed.error,
+      ...(hasAgy ? { agy: agyParsed.error } : {}),
     },
     citationSummary,
     verificationStages: {
       cliExecution: {
         codex: codexExec,
         claude: claudeExec,
+        ...(hasAgy ? { agy: agyExec } : {}),
       },
       structuredJsonParse: {
         codex: {
@@ -983,9 +1098,21 @@ export function synthesizeStructuredCrossReview({
           findingsCount: claudeFindings.length,
           error: claudeParsed.error,
         },
+        ...(hasAgy
+          ? {
+              agy: {
+                attempted: agyParsed.attempted,
+                ok: Boolean(agyParsed.attempted && agyParsed.parsed && !agyParsed.error),
+                findingsCount: agyFindings.length,
+                error: agyParsed.error,
+              },
+            }
+          : {}),
       },
       citationValidity: {
-        checked: Boolean(codexParsed.parsed || claudeParsed.parsed),
+        checked: Boolean(
+          codexParsed.parsed || claudeParsed.parsed || agyParsed.parsed,
+        ),
         totalFindings: citationSummary.totalFindings,
         validCitations: citationSummary.validCitations,
         fileOnlyCitations: citationSummary.fileOnlyCitations,
@@ -996,7 +1123,8 @@ export function synthesizeStructuredCrossReview({
         verified: false,
         semanticallyVerified: false,
         status: "pending_host_inspection",
-        note: "CLI exit=0, valid JSON schema, and valid file/line citation do NOT prove a finding is a real bug. The host agent or developer must inspect the cited code semantics.",
+        synthesizer: "current_session_model",
+        note: "CLI exit=0, valid JSON schema, and valid file/line citation do NOT prove a finding is a real bug. The current session's conversation model must inspect the cited code semantics for the final 3-to-1 synthesis.",
       },
     },
   };

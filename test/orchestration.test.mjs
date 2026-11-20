@@ -305,6 +305,93 @@ test("verifyFindingCitation and synthesizeStructuredCrossReview check trailing n
     assert.equal(distinctNearby.uniqueCodex.length, 1);
     assert.equal(distinctNearby.uniqueClaude.length, 1);
 
+    // 3-to-1 Cross-Review synthesis (Codex + Claude + Antigravity Neon High -> Session Model)
+    const threeWay = synthesizeStructuredCrossReview({
+      codexStructured: {
+        summary: "Codex review",
+        findings: [
+          {
+            severity: "critical",
+            file: "auth.mjs",
+            line: 2,
+            title: "Bypass on empty token",
+            detail: "Returns true when tok is empty",
+            fix: "Return false when !tok",
+          },
+        ],
+      },
+      claudeStructured: {
+        summary: "Claude review",
+        findings: [
+          {
+            severity: "critical",
+            file: "auth.mjs",
+            line: 2,
+            title: "Empty token auth bypass",
+            detail: "Empty token accepted as valid",
+            fix: "Reject empty token",
+          },
+          {
+            severity: "medium",
+            file: "auth.mjs",
+            line: 1,
+            title: "Missing typeof string check",
+            detail: "Check typeof tok === string",
+            fix: "Validate string type",
+          },
+        ],
+      },
+      agyStructured: {
+        summary: "Antigravity Neon High review",
+        findings: [
+          {
+            severity: "critical",
+            file: "auth.mjs",
+            line: 2,
+            title: "Authentication bypass when token is empty",
+            detail: "!tok returns true instead of false",
+            fix: "Return false on empty token",
+          },
+          {
+            severity: "medium",
+            file: "auth.mjs",
+            line: 1,
+            title: "No typeof string validation on token parameter",
+            detail: "Non-string tok input is not checked with typeof",
+            fix: "Add typeof tok !== string check",
+          },
+          {
+            severity: "low",
+            file: "auth.mjs",
+            line: 3,
+            title: "Constant false return stub",
+            detail: "Function always returns false for non-empty token",
+            fix: "Implement real signature verification",
+          },
+        ],
+      },
+      cwd: dir,
+    });
+    assert.equal(threeWay.architecture, "3-to-1");
+    assert.equal(threeWay.consensus.length, 2);
+    // Finding 1: 3/3 Unanimous across Codex + Claude + AGY Neon High
+    assert.deepEqual(threeWay.consensus[0].agreedBy, ["codex", "claude", "agy"]);
+    assert.equal(threeWay.consensus[0].agreementCount, 3);
+    assert.equal(threeWay.consensus[0].unanimous, true);
+    assert.equal(threeWay.consensus[0].severityMatch, true);
+    // Finding 2: 2/3 Majority across Claude + AGY Neon High
+    assert.deepEqual(threeWay.consensus[1].agreedBy, ["claude", "agy"]);
+    assert.equal(threeWay.consensus[1].agreementCount, 2);
+    assert.equal(threeWay.consensus[1].unanimous, false);
+    // Finding 3: 1/3 Unique to AGY Neon High
+    assert.equal(threeWay.uniqueAgy.length, 1);
+    assert.equal(threeWay.verificationStages.cliExecution.agy.ok, true);
+    assert.equal(threeWay.verificationStages.structuredJsonParse.agy.ok, true);
+    assert.equal(
+      threeWay.verificationStages.semanticVerification.synthesizer,
+      "current_session_model",
+    );
+
     // Explicit separation of CLI execution success vs Structured JSON parse failure
     const singleParseFail = buildStructuredSingleReview({
       engine: "codex",

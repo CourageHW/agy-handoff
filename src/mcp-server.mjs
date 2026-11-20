@@ -45,6 +45,14 @@ import {
   runClaudeExec,
   runClaudeReview,
 } from "./runners/claude.mjs";
+import {
+  buildAgyExecSpec,
+  buildAgyReviewSpec,
+  findAgyBinary,
+  inspectAgy,
+  runAgyExec,
+  runAgyReview,
+} from "./runners/agy.mjs";
 
 const SERVER_INFO = {
   name: "agy-handoff",
@@ -85,9 +93,9 @@ export const TOOLS = [
       properties: {
         engine: {
           type: "string",
-          enum: ["codex", "claude", "auto"],
+          enum: ["codex", "claude", "agy", "auto"],
           description:
-            "Which external CLI to run the review with ('auto' selects transparently via routing policy and CLI health).",
+            "Which CLI to run the review with ('codex', 'claude', 'agy' [default: gemini-4-neon-high], or 'auto').",
         },
         taskType: {
           type: "string",
@@ -172,9 +180,9 @@ export const TOOLS = [
       properties: {
         engine: {
           type: "string",
-          enum: ["codex", "claude", "auto"],
+          enum: ["codex", "claude", "agy", "auto"],
           description:
-            "Which external CLI to delegate the task to ('auto' selects transparently via routing policy and CLI health).",
+            "Which CLI to delegate the task to ('codex', 'claude', 'agy' [default: gemini-4-neon-high], or 'auto').",
         },
         taskType: {
           type: "string",
@@ -272,6 +280,22 @@ export const TOOLS = [
           type: "string",
           enum: ["low", "medium", "high", "xhigh", "max"],
         },
+        agyModel: {
+          type: "string",
+          description:
+            "Optional model override for the 3rd Antigravity reviewer (default: gemini-4-neon-high / 'neon').",
+        },
+        agyEffort: {
+          type: "string",
+          enum: ["low", "medium", "high", "xhigh", "max"],
+          description: "Optional effort override for the 3rd Antigravity reviewer (default: high).",
+        },
+        includeAgy: {
+          type: "boolean",
+          default: true,
+          description:
+            "Run the 3rd Antigravity reviewer (default: gemini-4-neon-high) in parallel for 3-to-1 cross-review synthesis.",
+        },
         cwd: { type: "string" },
         skipGitRepoCheck: {
           type: "boolean",
@@ -305,7 +329,7 @@ export const TOOLS = [
         },
         engine: {
           type: "string",
-          enum: ["codex", "claude"],
+          enum: ["codex", "claude", "agy"],
         },
         model: { type: "string" },
         effort: { type: "string" },
@@ -313,6 +337,8 @@ export const TOOLS = [
         codexEffort: { type: "string" },
         claudeModel: { type: "string" },
         claudeEffort: { type: "string" },
+        agyModel: { type: "string" },
+        agyEffort: { type: "string" },
         defaults: { type: "object" },
         commands: { type: "object" },
         routing: {
@@ -638,6 +664,28 @@ function buildBackgroundReviewJobSpec({
       requestParams,
     };
   }
+  if (engine === "agy") {
+    const binary = findAgyBinary();
+    if (!binary) throw new Error("Antigravity CLI (`agy`) not found in PATH.");
+    const spec = buildAgyReviewSpec(effectiveArgs);
+    return {
+      engine: "agy",
+      action: "review",
+      mode: "read-only",
+      command: binary,
+      args: spec.args,
+      cwd: spec.cwd,
+      stdin: spec.stdin,
+      timeoutMs: (timeoutSec || 600) * 1000,
+      parseMode: "agy-json",
+      model: resolved.model || null,
+      effort: resolved.effort || null,
+      handoffContext,
+      retryOf,
+      structured: Boolean(effectiveArgs.jsonSchema || requestParams?.structured),
+      requestParams,
+    };
+  }
   const binary = findClaudeBinary();
   if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
   const spec = buildClaudeReviewSpec(effectiveArgs);
@@ -698,6 +746,27 @@ function buildBackgroundDelegateJobSpec({
       requestParams: mode === "read-only" ? requestParams : null,
     };
   }
+  if (engine === "agy") {
+    const binary = findAgyBinary();
+    if (!binary) throw new Error("Antigravity CLI (`agy`) not found in PATH.");
+    const spec = buildAgyExecSpec(effectiveArgs);
+    return {
+      engine: "agy",
+      action: "delegate",
+      mode,
+      command: binary,
+      args: spec.args,
+      cwd: spec.cwd,
+      stdin: spec.stdin,
+      timeoutMs: (timeoutSec || 600) * 1000,
+      parseMode: "agy-json",
+      model: resolved.model || null,
+      effort: resolved.effort || null,
+      handoffContext,
+      retryOf,
+      requestParams: mode === "read-only" ? requestParams : null,
+    };
+  }
   const binary = findClaudeBinary();
   if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
   const spec = buildClaudeExecSpec(effectiveArgs);
@@ -731,12 +800,16 @@ export async function handleToolCall(
   switch (name) {
     case "handoff_doctor": {
       const staleJobsRecovered = jobManager.recoverStaleJobs();
-      const [codex, claude] = await Promise.all([inspectCodex(), inspectClaude()]);
+      const [codex, claude, agy] = await Promise.all([
+        inspectCodex(),
+        inspectClaude(),
+        inspectAgy(),
+      ]);
       const summary = getEffectiveConfigSummary();
       return {
         nodeVersion: process.version,
         platform: process.platform,
-        engines: { codex, claude },
+        engines: { codex, claude, agy },
         configPath: summary.configPath,
         modelDefaults: summary.effective,
         routingConfig: summary.config?.routing || null,
@@ -847,7 +920,9 @@ export async function handleToolCall(
         (onEvent) =>
           selectedEngine === "codex"
             ? runCodexReview({ ...effectiveArgs, onEvent })
-            : runClaudeReview({ ...effectiveArgs, onEvent }),
+            : selectedEngine === "agy"
+              ? runAgyReview({ ...effectiveArgs, onEvent })
+              : runClaudeReview({ ...effectiveArgs, onEvent }),
       );
       const structuredReview = args.structured
         ? buildStructuredSingleReview({
@@ -1002,7 +1077,9 @@ export async function handleToolCall(
         (onEvent) =>
           selectedEngine === "codex"
             ? runCodexExec({ ...effectiveArgs, onEvent })
-            : runClaudeExec({ ...effectiveArgs, onEvent }),
+            : selectedEngine === "agy"
+              ? runAgyExec({ ...effectiveArgs, onEvent })
+              : runClaudeExec({ ...effectiveArgs, onEvent }),
       );
       return {
         ...result,
@@ -1017,9 +1094,17 @@ export async function handleToolCall(
       const startedAt = Date.now();
       const codexBin = findCodexBinary();
       const claudeBin = findClaudeBinary();
-      if (!codexBin && !claudeBin) {
+      const agyBin = findAgyBinary();
+      const shouldIncludeAgy =
+        args.includeAgy !== false &&
+        (Boolean(agyBin) ||
+          args.includeAgy === true ||
+          process.env.AGY_HANDOFF_AGY_BIN !== undefined ||
+          (!process.env.AGY_HANDOFF_CODEX_BIN && !process.env.AGY_HANDOFF_CLAUDE_BIN));
+
+      if (!codexBin && !claudeBin && (!shouldIncludeAgy || !agyBin)) {
         throw new Error(
-          "Neither `codex` nor `claude` CLI was found in PATH. Run `handoff_doctor` for install instructions.",
+          "Neither `codex`, `claude`, nor `agy` CLI was found in PATH. Run `handoff_doctor` for install instructions.",
         );
       }
 
@@ -1042,6 +1127,10 @@ export async function handleToolCall(
       const claudeCfg = resolveEngineConfig("cross-review", "claude", {
         model: args.claudeModel,
         effort: args.claudeEffort,
+      });
+      const agyCfg = resolveEngineConfig("cross-review", "agy", {
+        model: args.agyModel,
+        effort: args.agyEffort,
       });
 
       let progressSeq = 0;
@@ -1165,12 +1254,67 @@ export async function handleToolCall(
         );
       }
 
-      const [codexResult, claudeResult] = await Promise.all(tasks);
-      const allResults = [codexResult, claudeResult];
-      const enginesAttempted = allResults.filter((r) => !r.skipped).length;
-      const enginesSucceeded = allResults.filter((r) => !r.skipped && r.ok).length;
-      const enginesFailed = allResults.filter((r) => !r.skipped && !r.ok).length;
-      const enginesSkipped = allResults.filter((r) => r.skipped).length;
+      if (shouldIncludeAgy) {
+        if (agyBin) {
+          tasks.push(
+            runTrackedForeground(
+              jobManager,
+              {
+                engine: "agy",
+                action: "cross-review",
+                cwd: resolvedCwd,
+                model: agyCfg.model,
+                effort: agyCfg.effort,
+                mode: "read-only",
+                handoffContext: ctx.metadata,
+                jsonStream: true,
+                onProgress: ({ message }) => {
+                  if (typeof onProgress === "function") {
+                    progressSeq += 1;
+                    onProgress({ progress: progressSeq, message });
+                  }
+                },
+              },
+              (onEvent) =>
+                runAgyReview({
+                  style,
+                  scope,
+                  base: args.base,
+                  commit: args.commit,
+                  prompt: effectivePrompt,
+                  model: agyCfg.model,
+                  effort: agyCfg.effort,
+                  cwd: resolvedCwd,
+                  timeoutSec,
+                  signal,
+                  jsonSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
+                  onEvent,
+                }),
+            ).catch((err) => ({
+              engine: "agy",
+              ok: false,
+              error: err.message,
+            })),
+          );
+        } else {
+          tasks.push(
+            Promise.resolve({
+              engine: "agy",
+              skipped: true,
+              reason: "agy CLI not installed",
+            }),
+          );
+        }
+      }
+
+      const [codexResult, claudeResult, agyResult = null] = await Promise.all(tasks);
+      const allResults = shouldIncludeAgy
+        ? [codexResult, claudeResult, agyResult]
+        : [codexResult, claudeResult];
+      const enginesAttempted = allResults.filter((r) => r && !r.skipped).length;
+      const enginesSucceeded = allResults.filter((r) => r && !r.skipped && r.ok).length;
+      const enginesFailed = allResults.filter((r) => r && !r.skipped && !r.ok).length;
+      const enginesSkipped = allResults.filter((r) => r && r.skipped).length;
       const ok = enginesSucceeded > 0;
 
       let structuredSynthesis;
@@ -1191,16 +1335,36 @@ export async function handleToolCall(
                 ? claudeResult.structuredOutput || null
                 : null,
             claudeStatus: claudeResult,
+            ...(shouldIncludeAgy
+              ? {
+                  agyOutput:
+                    !agyResult.skipped && agyResult.ok ? agyResult.output : "",
+                  agyStructured:
+                    !agyResult.skipped && agyResult.ok
+                      ? agyResult.structuredOutput || null
+                      : null,
+                  agyStatus: agyResult,
+                }
+              : {}),
             cwd: resolvedCwd,
           });
         } catch (err) {
           structuredSynthesis = {
-            summaries: { codex: null, claude: null },
+            summaries: {
+              codex: null,
+              claude: null,
+              ...(shouldIncludeAgy ? { agy: null } : {}),
+            },
             consensus: [],
             conflicts: [],
             uniqueCodex: [],
             uniqueClaude: [],
-            parseErrors: { codex: err.message, claude: err.message },
+            ...(shouldIncludeAgy ? { uniqueAgy: [] } : {}),
+            parseErrors: {
+              codex: err.message,
+              claude: err.message,
+              ...(shouldIncludeAgy ? { agy: err.message } : {}),
+            },
             citationSummary: {
               totalFindings: 0,
               validCitations: 0,
@@ -1214,6 +1378,8 @@ export async function handleToolCall(
 
       return {
         ok,
+        architecture: shouldIncludeAgy ? "3-to-1" : "2-to-1",
+        synthesizer: "current_session_model",
         style,
         scope,
         ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
@@ -1227,11 +1393,13 @@ export async function handleToolCall(
         resolvedModels: {
           codex: codexCfg,
           claude: claudeCfg,
+          ...(shouldIncludeAgy ? { agy: agyCfg } : {}),
         },
         ...(structuredSynthesis ? { structuredSynthesis } : {}),
         results: {
           codex: codexResult,
           claude: claudeResult,
+          ...(shouldIncludeAgy ? { agy: agyResult } : {}),
         },
       };
     }

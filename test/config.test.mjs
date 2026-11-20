@@ -24,6 +24,7 @@ test("resolveEngineConfig returns built-in defaults when no config file exists",
     assert.deepEqual(BUILTIN_DEFAULTS, {
       codex: { model: "gpt-6.2-sol", effort: "high" },
       claude: { model: "claude-opus-5-5", effort: "high" },
+      agy: { model: "gemini-4-neon-high", effort: "high" },
     });
 
     const codexReview = resolveEngineConfig("review", "codex", {}, file);
@@ -37,6 +38,14 @@ test("resolveEngineConfig returns built-in defaults when no config file exists",
     const claudeCross = resolveEngineConfig("cross-review", "claude", {}, file);
     assert.deepEqual(claudeCross, {
       model: "claude-opus-5-5",
+      effort: "high",
+      modelSource: "builtin",
+      effortSource: "builtin",
+    });
+
+    const agyCross = resolveEngineConfig("cross-review", "agy", {}, file);
+    assert.deepEqual(agyCross, {
+      model: "gemini-4-neon-high",
       effort: "high",
       modelSource: "builtin",
       effortSource: "builtin",
@@ -169,6 +178,13 @@ test("normalizeModelName and normalizeEffort validate inputs and expand Claude s
   assert.equal(normalizeModelName("claude", "haiku-5-5"), "claude-haiku-5-5");
   assert.equal(normalizeModelName("claude", "fable5.2"), "claude-fable-5-2");
   assert.equal(normalizeModelName("codex", "gpt-6.2-sol"), "gpt-6.2-sol");
+  assert.equal(normalizeModelName("agy", "neon"), "gemini-4-neon-high");
+  assert.equal(normalizeModelName("agy", "neon-xhigh"), "gemini-4-neon-xhigh");
+  assert.equal(normalizeModelName("agy", "argon"), "gemini-4-argon-high");
+  assert.equal(
+    resolveEngineConfig("cross-review", "agy", { model: "neon", effort: "xhigh" }).model,
+    "gemini-4-neon-xhigh",
+  );
 
   assert.throws(() => normalizeModelName("codex", "--dangerously-bypass"), /cannot start with "-"/);
   assert.throws(() => normalizeModelName("claude", "-m"), /cannot start with "-"/);

@@ -62,6 +62,8 @@ const COMMAND_ALLOWED_FLAGS = {
     "codex-effort",
     "claude-model",
     "claude-effort",
+    "agy-model",
+    "agy-effort",
     "cwd",
     "skip-git-repo-check",
     "timeout",
@@ -75,6 +77,8 @@ const COMMAND_ALLOWED_FLAGS = {
     "codex-effort",
     "claude-model",
     "claude-effort",
+    "agy-model",
+    "agy-effort",
   ]),
   config: new Set([
     "scope",
@@ -85,6 +89,8 @@ const COMMAND_ALLOWED_FLAGS = {
     "codex-effort",
     "claude-model",
     "claude-effort",
+    "agy-model",
+    "agy-effort",
   ]),
   jobs: new Set(["limit", "table", "fallback", "timeout"]),
   stats: new Set(["limit", "table"]),
@@ -323,6 +329,8 @@ async function main() {
         codexEffort: flags["codex-effort"],
         claudeModel: flags["claude-model"],
         claudeEffort: flags["claude-effort"],
+        agyModel: flags["agy-model"],
+        agyEffort: flags["agy-effort"],
         cwd: flags.cwd,
         skipGitRepoCheck: skipGitRepoCheck ? true : undefined,
         timeoutSec,
@@ -347,7 +355,11 @@ async function main() {
         let effort = flags.effort;
 
         if (subArgs.length > 0) {
-          if (subArgs[0] === "codex" || subArgs[0] === "claude") {
+          if (
+            subArgs[0] === "codex" ||
+            subArgs[0] === "claude" ||
+            subArgs[0] === "agy"
+          ) {
             scope = scope || "default";
             engine = engine || subArgs[0];
             if (model === undefined && subArgs[1] !== undefined) model = subArgs[1];
@@ -370,6 +382,8 @@ async function main() {
           codexEffort: flags["codex-effort"],
           claudeModel: flags["claude-model"],
           claudeEffort: flags["claude-effort"],
+          agyModel: flags["agy-model"],
+          agyEffort: flags["agy-effort"],
         });
       } else {
         throw new Error(`Unknown models subcommand: ${sub}`);

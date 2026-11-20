@@ -1,6 +1,6 @@
 # agy-handoff Guidelines
 
-`agy-handoff` exposes local **OpenAI Codex** (`codex`) and **Anthropic Claude Code** (`claude`) CLIs as MCP tools (`handoff_*`), subagents, and companion skills.
+`agy-handoff` exposes local **OpenAI Codex** (`codex`), **Anthropic Claude Code** (`claude`), and **Google Antigravity** (`agy`, default `gemini-4-neon-high`) CLIs as MCP tools (`handoff_*`), subagents (`codex-handoff`, `claude-handoff`, `neon-handoff`), and companion skills.
 
 ## Operating Rules
 
@@ -9,4 +9,4 @@
 3. **Check execution evidence & retry safely**: Inspect `executionEvidence` (observed tool calls, modified files, workspace git delta, and warnings). Never accept `workspace-write` completion without confirming observed modifications or git diff. Use `handoff_job_retry` only on failed/timed-out `read-only` jobs.
 4. **Verify before retrying**: If a handoff fails due to missing binaries, outdated flags, or auth errors, run `handoff_doctor` once and report the exact upgrade/setup command. Optional `engine: "auto"` selects transparently based on installed CLIs, recent failure streaks, and configured routing policy.
 5. **Verify findings against local files**: After receiving a review (`structured: true` or free-form), confirm cited files and semantics in local code before recommending or applying fixes (`semanticallyVerified` is always `false` until checked).
-6. **Subagent visibility in Antigravity CLI**: When the user wants inspectable subagent panes (`/agents`, `Alt+J`) with live progress, check `handoff_config({ action: "get" })` and invoke `codex-handoff` / `claude-handoff` with `Role` formatted to include the active model and effort (e.g., `"gpt-6.2-sol high review"`, `"claude-opus-5-5 high review"`). Mention `node <plugin-root>/src/cli.mjs watch` for live terminal monitoring.
+6. **3-to-1 Cross-Review & Subagent visibility in Antigravity CLI**: For cross-reviews, run **3 independent reviewers in parallel** (`codex` [default `gpt-6.2-sol high`] + `claude` [default `claude-opus-5-5 high`] + `agy` [default `gemini-4-neon-high high`]) and have the **current session's conversation model** synthesize all 3 into 1 verified report (`3-to-1`). When the user wants inspectable subagent panes (`/agents`, `Alt+J`), check `handoff_config({ action: "get" })` and invoke `codex-handoff`, `claude-handoff`, and `neon-handoff` in parallel with `Role` formatted to include the active model and effort (e.g., `"gpt-6.2-sol high review"`, `"claude-opus-5-5 high review"`, `"gemini-4-neon-high high review"`). Mention `node <plugin-root>/src/cli.mjs watch` for live terminal monitoring.

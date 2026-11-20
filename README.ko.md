@@ -1,21 +1,21 @@
 # agy-handoff
 
-**agy-handoff**는 Google Antigravity (`agy` CLI, Antigravity IDE, Antigravity 2.0)에서 로컬 **OpenAI Codex CLI**와 **Anthropic Claude Code CLI**를 Zero-dependency stdio MCP 서버로 오케스트레이션하는 멀티 에이전트 플러그인입니다.
+**agy-handoff**는 Google Antigravity (`agy` CLI, Antigravity IDE, Antigravity 2.0)에서 로컬 **OpenAI Codex CLI**, **Anthropic Claude Code CLI**, 그리고 **Google Antigravity Agent (기본값: `gemini-4-neon-high` / `neon high`)** 3개 모델을 병렬로 실행하고 **현재 세션의 대화 모델이 최종 취합(3-to-1)**하는 Zero-dependency stdio MCP 오케스트레이션 플러그인입니다.
 
-별도 API 키 설정이나 `npm install` 없이 로컬에 로그인된 `codex` · `claude` 인증을 그대로 재사용하며, Antigravity 커뮤니티에서 자주 겪는 **불필요한 전체 저장소 탐색, 작업 결과 검증 불확실성, 쿼터 집중, 서브에이전트 규칙/컨텍스트 혼선, 타임아웃·실패 시 복구 어려움**을 실질적으로 보완합니다.
+별도 API 키 설정이나 `npm install` 없이 로컬에 로그인된 `codex` · `claude` · `agy` 인증을 그대로 재사용하며, 기존 2개 모델 비교 시 발생하던 1:1 의견 대립(Tie-breaker 부재), 불필요한 전체 저장소 탐색, 작업 결과 검증 불확실성, 쿼터 집중, 서브에이전트 컨텍스트 혼선을 해결합니다.
 
 <p align="center">
-  <img src="./assets/demo.gif" alt="agy-handoff Graphical Abstract — Antigravity용 Codex & Claude Code 병렬 오케스트레이션" width="900" />
+  <img src="./assets/demo.gif" alt="agy-handoff Graphical Abstract — 3-to-1 병렬 Codex, Claude Code & Antigravity Neon 오케스트레이션" width="900" />
 </p>
 
 ## 주요 기능 (v0.2.0)
 
 - **의존성 제로 (Zero-dependency)**: Node.js (`>= 18.18.0`) 내장 모듈만으로 동작해 설치 즉시 실행됩니다.
+- **3-to-1 구조화 교차 리뷰 (`codex` + `claude` + `agy` ➔ 현재 세션 모델)**: **OpenAI Codex(`gpt-6.2-sol` `high`)** + **Claude Code(`claude-opus-5-5` `high`)** + **Antigravity Agent(`gemini-4-neon-high` `high`)** 3개 리뷰어가 병렬로 리뷰한 뒤 현재 세션의 대화 모델이 최종 취합(**3-to-1**)합니다. 만장일치(`3/3`) 및 다수결(`2/3`) 합의(`Consensus`), 심각도 충돌 타이브레이크(`Conflicts`), 단독 지적(`Unique`)을 분류하고, **① CLI 실행 성공(`cliExecution`) · ② JSON 스키마 파싱(`structuredJsonParse`) · ③ 파일·라인 인용 유효성(`citationValidity`) · ④ 의미 검증(`semanticVerification: false`)** 4단계를 명확히 분리합니다.
 - **Context-Aware Handoff**: `context: { files, summary, constraints, acceptanceCriteria }` (CLI `--files`, `--context-summary`)로 대상 파일과 기존 분석 결과를 넘겨 불필요한 전체 저장소 재탐색을 줄입니다.
 - **실행 증거 검증 (`executionEvidence`)**: 모든 실행에서 실제 관측된 도구 호출 수, 명령어, 조회/수정 파일, `workspace-write` 전후 `git status` 변화량(`workspaceGitDelta`)과 경고를 기록해 허위/빈 완료 보고를 잡아냅니다.
-- **구조화 교차 리뷰 (`structured: true`)**: Codex (`--output-schema`)와 Claude (`--json-schema`)에서 JSON 형식 리뷰를 받아 파일·라인 근접성뿐 아니라 결함 키워드·개념 일치(`matchBasis`)를 함께 검증해 **합의(Consensus) · 심각도 충돌(Conflicts) · 단독 지적(Unique)**으로 분류합니다. 또한 `verificationStages`를 통해 **① CLI 실행 성공(`cliExecution`) · ② JSON 스키마 파싱 성공(`structuredJsonParse`) · ③ 파일·라인 인용 유효성(`citationValidity`) · ④ 의미 검증(`semanticVerification: { semanticallyVerified: false }`)** 4단계를 명확히 분리합니다.
-- **안전한 Read-only 재시도 & 선택적 정책 라우팅**: `handoff_doctor`가 비정상 종료된 잔존 잡을 정리하고, `handoff_job_retry`로 실패/타임아웃된 `read-only` 잡만 동일/대체 엔진으로 안전하게 재실행(`workspace-write`는 거부)합니다. 또한 `engine: "auto"` 선택 시 CLI 호환성, 연속 실패 회피, 최근 20건 사용량 균형을 투명하게 적용합니다.
-- **실시간 가시성 & 시각 통계 (`Alt+J` / `watch` / `stats --table`)**: 격리된 `codex-handoff` · `claude-handoff` 서브에이전트 패널과 터미널 `watch`, `stats --table` 막대 그래프 요약을 제공합니다.
+- **안전한 Read-only 재시도 & 선택적 정책 라우팅**: `handoff_doctor`가 비정상 종료된 잔존 잡을 정리하고, `handoff_job_retry`로 실패/타임아웃된 `read-only` 잡만 동일/대체 엔진으로 안전하게 재실행(`workspace-write`는 거부)합니다.
+- **3개 서브에이전트 실시간 패널 & 시각 통계 (`Alt+J` / `watch` / `stats --table`)**: 격리된 `codex-handoff` · `claude-handoff` · `neon-handoff` 3개 서브에이전트 패널과 터미널 `watch`, `stats --table` 막대 그래프 요약을 제공합니다.
 
 ---
 
@@ -44,8 +44,10 @@ node src/cli.mjs stats --table
 
 ## 기본 모델 및 라우팅 정책
 
-- **Codex**: `gpt-6.2-sol` (`effort: "high"`)
-- **Claude Code**: `claude-opus-5-5` (`effort: "high"`)
+- **Codex (`codex-handoff`)**: `gpt-6.2-sol` (`effort: "high"`)
+- **Claude Code (`claude-handoff`)**: `claude-opus-5-5` (`effort: "high"`)
+- **Antigravity 3번째 리뷰어 (`neon-handoff` / `engine: "agy"`)**: `gemini-4-neon-high` (`neon`, `effort: "high"`)
+- **최종 취합 (3-to-1 Synthesizer)**: 현재 세션의 활성 대화 모델
 - **선택적 `engine: "auto"`**: 기본 정책 `balanced` (CLI 가용성, 최근 연속 2회 실패 회피, 최근 20건 최소 사용 엔진 우선 선택 + `config.routing` 설정 지원).
 
 ---

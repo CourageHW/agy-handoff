@@ -12,15 +12,17 @@ export const DEFAULT_ROUTING_CONFIG = {
 export const BUILTIN_DEFAULTS = {
   codex: { model: "gpt-6.2-sol", effort: "high" },
   claude: { model: "claude-opus-5-5", effort: "high" },
+  agy: { model: "gemini-4-neon-high", effort: "high" },
 };
 
 export const CONFIGURABLE_COMMANDS = ["review", "delegate", "cross-review"];
 export const VALID_SCOPES = ["default", "review", "delegate", "cross-review"];
-export const VALID_ENGINES = ["codex", "claude"];
+export const VALID_ENGINES = ["codex", "claude", "agy"];
 
 export const ALLOWED_EFFORTS_BY_ENGINE = {
   codex: ["low", "medium", "high", "xhigh", "max", "ultra"],
   claude: ["low", "medium", "high", "xhigh", "max"],
+  agy: ["low", "medium", "high", "xhigh", "max"],
 };
 
 export const CLI_DEFAULT_TOKENS = new Set(["cli-default", "inherit", "auto", "none"]);
@@ -31,6 +33,39 @@ const CLAUDE_SHORTHAND_MAP = new Map([
   ["haiku55", "claude-haiku-5-5"],
   ["fable52", "claude-fable-5-2"],
 ]);
+
+const AGY_SHORTHAND_MAP = new Map([
+  ["neon", "gemini-4-neon-high"],
+  ["neonhigh", "gemini-4-neon-high"],
+  ["neonxhigh", "gemini-4-neon-xhigh"],
+  ["neonmedium", "gemini-4-neon-medium"],
+  ["neonlow", "gemini-4-neon-low"],
+  ["gemini4neon", "gemini-4-neon-high"],
+  ["argon", "gemini-4-argon-high"],
+  ["argonhigh", "gemini-4-argon-high"],
+  ["argonmedium", "gemini-4-argon-medium"],
+  ["argonlow", "gemini-4-argon-low"],
+  ["gemini4argon", "gemini-4-argon-high"],
+  ["hydrogen", "gemini-4-hydrogen-high"],
+  ["hydrogenhigh", "gemini-4-hydrogen-high"],
+  ["hydrogenxhigh", "gemini-4-hydrogen-xhigh"],
+  ["hydrogenmedium", "gemini-4-hydrogen-medium"],
+  ["hydrogenlow", "gemini-4-hydrogen-low"],
+  ["gemini4hydrogen", "gemini-4-hydrogen-high"],
+  ["flash", "gemini-3.8-flash-high"],
+  ["flashhigh", "gemini-3.8-flash-high"],
+  ["flashmedium", "gemini-3.8-flash-medium"],
+  ["flashlow", "gemini-3.8-flash-low"],
+  ["orchestratorneon", "gemini-pro-orchestrator-neon"],
+  ["orchestratorargon", "gemini-pro-orchestrator-g1-pro"],
+]);
+
+const AGY_FAMILY_EFFORTS = {
+  "gemini-4-neon": new Set(["low", "medium", "high", "xhigh"]),
+  "gemini-4-argon": new Set(["low", "medium", "high"]),
+  "gemini-4-hydrogen": new Set(["low", "medium", "high", "xhigh"]),
+  "gemini-3.8-flash": new Set(["low", "medium", "high"]),
+};
 
 const FALLBACK_CODEX_MODELS = [
   "gpt-6.2-sol",
@@ -48,13 +83,36 @@ const DEFAULT_CLAUDE_MODELS = [
   "haiku",
 ];
 
+const DEFAULT_AGY_MODELS = [
+  "gemini-4-neon-high",
+  "gemini-4-neon-xhigh",
+  "gemini-4-neon-medium",
+  "gemini-4-neon-low",
+  "gemini-4-argon-high",
+  "gemini-4-argon-medium",
+  "gemini-4-argon-low",
+  "gemini-4-hydrogen-high",
+  "gemini-4-hydrogen-xhigh",
+  "gemini-4-hydrogen-medium",
+  "gemini-4-hydrogen-low",
+  "gemini-3.8-flash-high",
+  "gemini-3.8-flash-medium",
+  "gemini-3.8-flash-low",
+  "neon",
+  "argon",
+  "hydrogen",
+  "flash",
+];
+
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function assertValidEngine(engine) {
   if (!VALID_ENGINES.includes(engine)) {
-    throw new Error(`Invalid engine "${engine}". Expected "codex" or "claude".`);
+    throw new Error(
+      `Invalid engine "${engine}". Expected "codex", "claude", or "agy".`,
+    );
   }
 }
 
@@ -97,6 +155,14 @@ export function normalizeModelName(engine, model) {
   if (engine === "claude") {
     const shorthandKey = trimmed.toLowerCase().replace(/[-_.]/g, "");
     const mapped = CLAUDE_SHORTHAND_MAP.get(shorthandKey);
+    if (mapped) {
+      return mapped;
+    }
+  }
+
+  if (engine === "agy") {
+    const shorthandKey = trimmed.toLowerCase().replace(/[-_.]/g, "");
+    const mapped = AGY_SHORTHAND_MAP.get(shorthandKey);
     if (mapped) {
       return mapped;
     }
@@ -247,6 +313,18 @@ function resolveFromConfig(config, command, engine, overrides = {}) {
     effortSource = "builtin";
   }
 
+  if (engine === "agy" && modelValue && effortValue) {
+    for (const [family, supportedEfforts] of Object.entries(AGY_FAMILY_EFFORTS)) {
+      if (
+        (modelValue === family || modelValue.startsWith(`${family}-`)) &&
+        supportedEfforts.has(effortValue)
+      ) {
+        modelValue = `${family}-${effortValue}`;
+        break;
+      }
+    }
+  }
+
   return {
     model: modelValue === null ? undefined : modelValue,
     effort: effortValue === null ? undefined : effortValue,
@@ -297,6 +375,10 @@ export function discoverAvailableModels() {
       models: [...DEFAULT_CLAUDE_MODELS],
       efforts: [...ALLOWED_EFFORTS_BY_ENGINE.claude],
     },
+    agy: {
+      models: [...DEFAULT_AGY_MODELS],
+      efforts: [...ALLOWED_EFFORTS_BY_ENGINE.agy],
+    },
   };
 }
 
@@ -307,6 +389,7 @@ export function getEffectiveConfigSummary(overridePath) {
   const buildPair = (command) => ({
     codex: resolveFromConfig(config, command, "codex"),
     claude: resolveFromConfig(config, command, "claude"),
+    agy: resolveFromConfig(config, command, "agy"),
   });
 
   const effective = {
@@ -529,6 +612,21 @@ export function updateConfig(args = {}, overridePath) {
       changed = true;
       if (scope === "all") {
         clearEngineFromCommands(next.commands, "claude");
+      }
+    }
+  }
+
+  if (args.agyModel !== undefined || args.agyEffort !== undefined) {
+    const target = getTargetMap();
+    if (
+      applyEngineEntry(target, "agy", {
+        model: args.agyModel,
+        effort: args.agyEffort,
+      })
+    ) {
+      changed = true;
+      if (scope === "all") {
+        clearEngineFromCommands(next.commands, "agy");
       }
     }
   }

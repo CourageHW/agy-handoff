@@ -361,9 +361,137 @@ export function parseCodexJsonlOutput(stdout) {
   };
 }
 
+export function parseAgyStreamJsonLine(line) {
+  const ev = tryParseJsonObject(line);
+  if (!ev) return [];
+
+  if (ev.event === "init") {
+    const model = ev.init?.model || "gemini-4-neon-high";
+    return [
+      {
+        kind: "init",
+        sessionId: ev.conversation_id || null,
+        model,
+        summary: `Session started (${compactText(model, 60)})`,
+      },
+    ];
+  }
+
+  if (ev.event === "step_update" && ev.step_update && typeof ev.step_update === "object") {
+    const su = ev.step_update;
+    if (su.step_type === "tool") {
+      const rawTool = String(su.tool_name || su.tool_info?.name || "Tool");
+      const params =
+        su.tool_info?.parameters && typeof su.tool_info.parameters === "object"
+          ? su.tool_info.parameters
+          : {};
+      let mappedTool = rawTool;
+      if (rawTool === "read_file" || rawTool === "view_file") mappedTool = "Read";
+      else if (rawTool === "grep_search") mappedTool = "Grep";
+      else if (rawTool === "find_by_name" || rawTool === "list_dir") mappedTool = "Glob";
+      else if (rawTool === "run_command") mappedTool = "Bash";
+      else if (
+        rawTool === "edit_file" ||
+        rawTool === "replace_file_content" ||
+        rawTool === "multi_replace_file_content" ||
+        rawTool === "sed_file"
+      ) {
+        mappedTool = "Edit";
+      } else if (rawTool === "write_file" || rawTool === "write_to_file") {
+        mappedTool = "Write";
+      }
+
+      const target =
+        params.Path ||
+        params.TargetFile ||
+        params.AbsolutePath ||
+        params.CommandLine ||
+        params.SearchPath ||
+        params.Query ||
+        params.Pattern ||
+        "";
+      const toolUseId =
+        typeof su.step_index === "number" ? `agy_step_${su.step_index}` : undefined;
+
+      if (su.state === "ACTIVE") {
+        return [
+          {
+            kind: "tool_start",
+            tool: mappedTool,
+            target: target ? String(target) : null,
+            ...(toolUseId ? { toolUseId } : {}),
+            summary: target
+              ? `${mappedTool}: ${compactText(target)}`
+              : mappedTool,
+          },
+        ];
+      }
+      if (su.state === "DONE") {
+        return [
+          {
+            kind: "tool_done",
+            tool: mappedTool,
+            ...(toolUseId ? { toolUseId } : {}),
+            isError: false,
+            summary: `${mappedTool} completed`,
+          },
+        ];
+      }
+      if (su.state === "ERROR") {
+        return [
+          {
+            kind: "error",
+            ...(toolUseId ? { toolUseId } : {}),
+            summary: `Tool error: ${compactText(rawTool)}`,
+          },
+        ];
+      }
+    }
+
+    if (
+      su.step_type === "agent_response" &&
+      su.state === "DONE" &&
+      typeof su.text_delta === "string" &&
+      su.text_delta.trim()
+    ) {
+      return [
+        {
+          kind: "message",
+          summary: `Note: ${compactText(su.text_delta)}`,
+        },
+      ];
+    }
+    return [];
+  }
+
+  if (ev.event === "result" && ev.result && typeof ev.result === "object") {
+    const r = ev.result;
+    const isError = r.status === "ERROR";
+    const turns = typeof r.num_turns === "number" ? r.num_turns : 1;
+    return [
+      {
+        kind: "result",
+        sessionId: r.conversation_id || null,
+        usage: r.usage && typeof r.usage === "object" ? r.usage : null,
+        isError,
+        numTurns: r.num_turns ?? null,
+        summary: isError
+          ? `Error: ${compactText(r.error || r.response || "failed")}`
+          : `Completed (${turns} turns)`,
+      },
+    ];
+  }
+
+  return [];
+}
+
 export function createEventStreamParser(engine, onEvent) {
   const parseLine =
-    engine === "codex" ? parseCodexJsonLine : parseClaudeStreamJsonLine;
+    engine === "codex"
+      ? parseCodexJsonLine
+      : engine === "agy"
+        ? parseAgyStreamJsonLine
+        : parseClaudeStreamJsonLine;
   const decoder = new StringDecoder("utf8");
   let buffer = "";
   let dropUntilNewline = false;

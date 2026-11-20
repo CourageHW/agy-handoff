@@ -10,45 +10,41 @@
 
   <!-- Header Bar: Minimal Title + 4 Visual Flow Steps -->
   <text x="40" y="54" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="24" font-weight="bold">agy-handoff</text>
-  <text x="205" y="53" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="16">Dual-Engine CLI Orchestrator for Antigravity</text>
+  <text x="205" y="53" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="16">3-to-1 Multi-Agent Orchestrator for Antigravity</text>
 
   <!-- 4 Flow Step Pills (Top Right) -->
   <rect x="555" y="26" width="142" height="36" rx="18" fill="#21262d" stroke="#30363d" stroke-width="1"/>
   <text x="626" y="49" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="13" font-weight="bold">1. Scoped Task</text>
 
   <rect x="707" y="26" width="152" height="36" rx="18" fill="#21262d" stroke="#30363d" stroke-width="1"/>
-  <text x="783" y="49" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="13" font-weight="bold">2. Parallel CLIs</text>
+  <text x="783" y="49" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="13" font-weight="bold">2. 3 Reviewers</text>
 
   <rect x="869" y="26" width="142" height="36" rx="18" fill="#21262d" stroke="#30363d" stroke-width="1"/>
   <text x="940" y="49" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="13" font-weight="bold">3. Disk Check</text>
 
   <rect x="1021" y="26" width="142" height="36" rx="18" fill="#21262d" stroke="#30363d" stroke-width="1"/>
-  <text x="1092" y="49" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="13" font-weight="bold">4. Consensus</text>
+  <text x="1092" y="49" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="13" font-weight="bold">4. 3-to-1 Merge</text>
 
   <!-- ==================== NODE 1: ANTIGRAVITY HOST (LEFT) ==================== -->
   <g opacity="1.0">
     <rect x="38" y="165" width="215" height="240" rx="14" fill="#161b22" stroke="#58a6ff" stroke-width="2"/>
-    <!-- Window header bar -->
     <rect x="38" y="165" width="215" height="36" rx="14" fill="#21262d"/>
     <circle cx="58" cy="183" r="5" fill="#f85149"/>
     <circle cx="74" cy="183" r="5" fill="#d29922"/>
     <circle cx="90" cy="183" r="5" fill="#3fb950"/>
     <text x="145" y="188" text-anchor="middle" fill="#8b949e" font-family="Ubuntu Mono, monospace" font-size="12">agy / IDE</text>
 
-    <!-- Terminal prompt icon -->
     <rect x="64" y="222" width="163" height="58" rx="10" fill="#0d1117" stroke="#30363d" stroke-width="1.5"/>
     <text x="80" y="248" fill="#58a6ff" font-family="Ubuntu Mono, monospace" font-size="18" font-weight="bold">&gt;_</text>
     <text x="114" y="248" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="17" font-weight="bold">Antigravity</text>
-    <text x="145" y="268" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="12">Host Agent</text>
+    <text x="145" y="268" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="12">Session Model</text>
 
-    <!-- Scoped files chip -->
     <rect x="64" y="296" width="163" height="38" rx="8" fill="#1f2937" stroke="#388bfd" stroke-width="1"/>
     <text x="145" y="320" text-anchor="middle" fill="#79c0ff" font-family="Ubuntu Mono, monospace" font-size="13" font-weight="bold">Diff + Context</text>
 
-    <!-- Live panes chip -->
     <rect x="64" y="346" width="163" height="38" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
     <circle cx="84" cy="365" r="4.5" fill="#3fb950"/>
-    <text x="152" y="370" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu Mono, monospace" font-size="12.5">Alt+J Live Panes</text>
+    <text x="152" y="370" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu Mono, monospace" font-size="12.5">Alt+J · 3 Panes</text>
   </g>
 
   <!-- Connector 1 -> 2 (Antigravity -> MCP Router) -->
@@ -62,56 +58,70 @@
     <text x="405" y="232" text-anchor="middle" fill="#58a6ff" font-family="Ubuntu Mono, monospace" font-size="13" font-weight="bold">MCP SERVER</text>
     <text x="405" y="256" text-anchor="middle" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="17" font-weight="bold">agy-handoff</text>
 
-    <!-- Sandbox Lock Badge -->
     <rect x="346" y="276" width="118" height="34" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1.2"/>
     <text x="405" y="298" text-anchor="middle" fill="#79c0ff" font-family="Ubuntu, sans-serif" font-size="12.5" font-weight="bold">Read-Only</text>
 
-    <!-- Auto Router Badge -->
     <rect x="346" y="320" width="118" height="34" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1.2"/>
-    <text x="405" y="342" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="12.5">Auto Route</text>
+    <text x="405" y="342" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu, sans-serif" font-size="12.5">3-Way Fanout</text>
   </g>
 
-  <!-- Fork Connectors: MCP Hub -> Parallel CLIs -->
-  <path d="M 480 255 L 515 255 L 515 195 L 552 195" fill="none" stroke="#3fb950" stroke-width="3" opacity="1.0"/>
-  <polygon points="549,188 563,195 549,202" fill="#3fb950" opacity="1.0"/>
+  <!-- 3-Way Fork Connectors: MCP Hub -> 3 Parallel Reviewers -->
+  <path d="M 480 250 L 515 250 L 515 155 L 552 155" fill="none" stroke="#3fb950" stroke-width="2.8" opacity="1.0"/>
+  <polygon points="549,148 563,155 549,162" fill="#3fb950" opacity="1.0"/>
 
-  <path d="M 480 315 L 515 315 L 515 375 L 552 375" fill="none" stroke="#d29922" stroke-width="3" opacity="1.0"/>
-  <polygon points="549,368 563,375 549,382" fill="#d29922" opacity="1.0"/>
+  <line x1="480" y1="285" x2="552" y2="285" stroke="#d29922" stroke-width="2.8" opacity="1.0"/>
+  <polygon points="549,278 563,285 549,292" fill="#d29922" opacity="1.0"/>
+
+  <path d="M 480 320 L 515 320 L 515 415 L 552 415" fill="none" stroke="#a371f7" stroke-width="2.8" opacity="1.0"/>
+  <polygon points="549,408 563,415 549,422" fill="#a371f7" opacity="1.0"/>
   
 
-  <!-- ==================== NODE 3: PARALLEL LOCAL CLIs ==================== -->
-  <!-- Top Track: OpenAI Codex CLI -->
+  <!-- ==================== NODE 3: 3 PARALLEL REVIEWERS ==================== -->
+  <!-- Track 1 (Top): OpenAI Codex CLI -->
   <g opacity="1.0">
-    <rect x="565" y="125" width="210" height="140" rx="14" fill="#161b22" stroke="#3fb950" stroke-width="2"/>
-    <rect x="565" y="125" width="210" height="10" rx="5" fill="#238636"/>
-    <circle cx="594" cy="166" r="12" fill="#0f291e" stroke="#3fb950" stroke-width="2"/>
-    <text x="594" y="171" text-anchor="middle" fill="#3fb950" font-family="Ubuntu Mono, monospace" font-size="13" font-weight="bold">C</text>
-    <text x="616" y="165" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="17" font-weight="bold">Codex CLI</text>
-    <text x="616" y="184" fill="#3fb950" font-family="Ubuntu Mono, monospace" font-size="12.5">gpt-6.2-sol</text>
-
-    <rect x="583" y="204" width="174" height="40" rx="8" fill="#0d1117" stroke="#238636" stroke-width="1"/>
-    <text x="670" y="229" text-anchor="middle" fill="#aff5b4" font-family="Ubuntu Mono, monospace" font-size="12.5">OS Sandbox · JSON</text>
+    <rect x="565" y="102" width="210" height="106" rx="12" fill="#161b22" stroke="#3fb950" stroke-width="2"/>
+    <rect x="565" y="102" width="210" height="8" rx="4" fill="#238636"/>
+    <circle cx="592" cy="136" r="11" fill="#0f291e" stroke="#3fb950" stroke-width="2"/>
+    <text x="592" y="140" text-anchor="middle" fill="#3fb950" font-family="Ubuntu Mono, monospace" font-size="12" font-weight="bold">1</text>
+    <text x="612" y="135" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="15.5" font-weight="bold">Codex CLI</text>
+    <text x="612" y="153" fill="#3fb950" font-family="Ubuntu Mono, monospace" font-size="12">gpt-6.2-sol · high</text>
+    <rect x="581" y="165" width="178" height="30" rx="6" fill="#0d1117" stroke="#238636" stroke-width="1"/>
+    <text x="670" y="185" text-anchor="middle" fill="#aff5b4" font-family="Ubuntu Mono, monospace" font-size="11.5">OS Sandbox · JSON</text>
   </g>
 
-  <!-- Bottom Track: Claude Code CLI -->
+  <!-- Track 2 (Middle): Claude Code CLI -->
   <g opacity="1.0">
-    <rect x="565" y="305" width="210" height="140" rx="14" fill="#161b22" stroke="#d29922" stroke-width="2"/>
-    <rect x="565" y="305" width="210" height="10" rx="5" fill="#9e6a03"/>
-    <circle cx="594" cy="346" r="12" fill="#2e190f" stroke="#d29922" stroke-width="2"/>
-    <text x="594" y="351" text-anchor="middle" fill="#d29922" font-family="Ubuntu Mono, monospace" font-size="13" font-weight="bold">A</text>
-    <text x="616" y="345" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="17" font-weight="bold">Claude CLI</text>
-    <text x="616" y="364" fill="#d29922" font-family="Ubuntu Mono, monospace" font-size="12.5">claude-opus-5-5</text>
-
-    <rect x="583" y="384" width="174" height="40" rx="8" fill="#0d1117" stroke="#9e6a03" stroke-width="1"/>
-    <text x="670" y="409" text-anchor="middle" fill="#f8e3a1" font-family="Ubuntu Mono, monospace" font-size="12.5">--restricted · JSON</text>
+    <rect x="565" y="232" width="210" height="106" rx="12" fill="#161b22" stroke="#d29922" stroke-width="2"/>
+    <rect x="565" y="232" width="210" height="8" rx="4" fill="#9e6a03"/>
+    <circle cx="592" cy="266" r="11" fill="#2e190f" stroke="#d29922" stroke-width="2"/>
+    <text x="592" y="270" text-anchor="middle" fill="#d29922" font-family="Ubuntu Mono, monospace" font-size="12" font-weight="bold">2</text>
+    <text x="612" y="265" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="15.5" font-weight="bold">Claude CLI</text>
+    <text x="612" y="283" fill="#d29922" font-family="Ubuntu Mono, monospace" font-size="12">claude-opus-5-5 · high</text>
+    <rect x="581" y="295" width="178" height="30" rx="6" fill="#0d1117" stroke="#9e6a03" stroke-width="1"/>
+    <text x="670" y="315" text-anchor="middle" fill="#f8e3a1" font-family="Ubuntu Mono, monospace" font-size="11.5">--restricted · JSON</text>
   </g>
 
-  <!-- Merge Connectors: Parallel CLIs -> Verification Gate -->
-  <path d="M 775 195 L 805 195 L 805 260 L 826 260" fill="none" stroke="#3fb950" stroke-width="3" opacity="1.0"/>
-  <polygon points="823,253 837,260 823,267" fill="#3fb950" opacity="1.0"/>
+  <!-- Track 3 (Bottom): Antigravity Neon Agent -->
+  <g opacity="1.0">
+    <rect x="565" y="362" width="210" height="106" rx="12" fill="#161b22" stroke="#a371f7" stroke-width="2"/>
+    <rect x="565" y="362" width="210" height="8" rx="4" fill="#6e40c9"/>
+    <circle cx="592" cy="396" r="11" fill="#21183c" stroke="#a371f7" stroke-width="2"/>
+    <text x="592" y="400" text-anchor="middle" fill="#a371f7" font-family="Ubuntu Mono, monospace" font-size="12" font-weight="bold">3</text>
+    <text x="612" y="395" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="15.5" font-weight="bold">AGY Agent</text>
+    <text x="612" y="413" fill="#d2a8ff" font-family="Ubuntu Mono, monospace" font-size="12">neon · high</text>
+    <rect x="581" y="425" width="178" height="30" rx="6" fill="#0d1117" stroke="#6e40c9" stroke-width="1"/>
+    <text x="670" y="445" text-anchor="middle" fill="#e2c5ff" font-family="Ubuntu Mono, monospace" font-size="11.5">--sandbox · JSON</text>
+  </g>
 
-  <path d="M 775 375 L 805 375 L 805 310 L 826 310" fill="none" stroke="#d29922" stroke-width="3" opacity="1.0"/>
-  <polygon points="823,303 837,310 823,317" fill="#d29922" opacity="1.0"/>
+  <!-- 3-to-1 Merge Connectors: 3 Reviewers -> Verification Gate -->
+  <path d="M 775 155 L 805 155 L 805 245 L 826 245" fill="none" stroke="#3fb950" stroke-width="2.8" opacity="1.0"/>
+  <polygon points="823,238 837,245 823,252" fill="#3fb950" opacity="1.0"/>
+
+  <line x1="775" y1="285" x2="826" y2="285" stroke="#d29922" stroke-width="2.8" opacity="1.0"/>
+  <polygon points="823,278 837,285 823,292" fill="#d29922" opacity="1.0"/>
+
+  <path d="M 775 415 L 805 415 L 805 325 L 826 325" fill="none" stroke="#a371f7" stroke-width="2.8" opacity="1.0"/>
+  <polygon points="823,318 837,325 823,332" fill="#a371f7" opacity="1.0"/>
   
 
   <!-- ==================== NODE 4: 4-STAGE VERIFIER GATE ==================== -->
@@ -129,37 +139,37 @@
     <text x="895" y="327" text-anchor="middle" fill="#79c0ff" font-family="Ubuntu Mono, monospace" font-size="11.5">3. File:Line</text>
 
     <rect x="848" y="346" width="94" height="32" rx="6" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
-    <text x="895" y="367" text-anchor="middle" fill="#3fb950" font-family="Ubuntu Mono, monospace" font-size="11.5">4. Match</text>
+    <text x="895" y="367" text-anchor="middle" fill="#3fb950" font-family="Ubuntu Mono, monospace" font-size="11.5">4. 3-Way</text>
   </g>
 
-  <!-- Connector: Verifier -> Verified Output -->
+  <!-- Connector: Verifier -> 3-to-1 Lead Synthesis -->
   <line x1="952" y1="285" x2="982" y2="285" stroke="#3fb950" stroke-width="3" opacity="1.0"/>
   <polygon points="979,278 993,285 979,292" fill="#3fb950" opacity="1.0"/>
   
 
-  <!-- ==================== NODE 5: VERIFIED SYNTHESIS (RIGHT) ==================== -->
+  <!-- ==================== NODE 5: 3-TO-1 SYNTHESIS (RIGHT) ==================== -->
   <g opacity="1.0">
     <rect x="994" y="150" width="170" height="270" rx="14" fill="#161b22" stroke="#3fb950" stroke-width="2"/>
-    <text x="1079" y="184" text-anchor="middle" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="16" font-weight="bold">Verified Report</text>
+    <text x="1079" y="182" text-anchor="middle" fill="#f0f6fc" font-family="Ubuntu, sans-serif" font-size="15.5" font-weight="bold">3-to-1 Synthesis</text>
 
-    <!-- Badge 1: Consensus -->
-    <rect x="1010" y="202" width="138" height="46" rx="10" fill="#0f291e" stroke="#238636" stroke-width="1.5"/>
-    <text x="1079" y="223" text-anchor="middle" fill="#3fb950" font-family="Ubuntu, sans-serif" font-size="14" font-weight="bold">Consensus</text>
-    <text x="1079" y="240" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="11">Both CLIs Agree</text>
+    <!-- Badge 1: 3/3 & 2/3 Consensus -->
+    <rect x="1010" y="200" width="138" height="46" rx="10" fill="#0f291e" stroke="#238636" stroke-width="1.5"/>
+    <text x="1079" y="221" text-anchor="middle" fill="#3fb950" font-family="Ubuntu, sans-serif" font-size="13.5" font-weight="bold">3/3 &amp; 2/3 Agree</text>
+    <text x="1079" y="238" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="11">Consensus Vote</text>
 
-    <!-- Badge 2: Conflict -->
-    <rect x="1010" y="258" width="138" height="46" rx="10" fill="#2e190f" stroke="#9e6a03" stroke-width="1.5"/>
-    <text x="1079" y="279" text-anchor="middle" fill="#d29922" font-family="Ubuntu, sans-serif" font-size="14" font-weight="bold">Conflicts</text>
-    <text x="1079" y="296" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="11">Severity Diff</text>
+    <!-- Badge 2: Tie-Break -->
+    <rect x="1010" y="256" width="138" height="46" rx="10" fill="#2e190f" stroke="#9e6a03" stroke-width="1.5"/>
+    <text x="1079" y="277" text-anchor="middle" fill="#d29922" font-family="Ubuntu, sans-serif" font-size="13.5" font-weight="bold">Tie-Break</text>
+    <text x="1079" y="294" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="11">Severity Conflicts</text>
 
     <!-- Badge 3: Citation Valid -->
-    <rect x="1010" y="314" width="138" height="46" rx="10" fill="#172554" stroke="#388bfd" stroke-width="1.5"/>
-    <text x="1079" y="335" text-anchor="middle" fill="#79c0ff" font-family="Ubuntu, sans-serif" font-size="14" font-weight="bold">Citations</text>
-    <text x="1079" y="352" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="11">Checked on Disk</text>
+    <rect x="1010" y="312" width="138" height="46" rx="10" fill="#172554" stroke="#388bfd" stroke-width="1.5"/>
+    <text x="1079" y="333" text-anchor="middle" fill="#79c0ff" font-family="Ubuntu, sans-serif" font-size="13.5" font-weight="bold">Citations</text>
+    <text x="1079" y="350" text-anchor="middle" fill="#8b949e" font-family="Ubuntu, sans-serif" font-size="11">Checked on Disk</text>
 
-    <!-- Badge 4: Evidence -->
-    <rect x="1010" y="370" width="138" height="34" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
-    <text x="1079" y="392" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu Mono, monospace" font-size="12">Tool Evidence</text>
+    <!-- Badge 4: Session Lead -->
+    <rect x="1010" y="368" width="138" height="36" rx="8" fill="#0d1117" stroke="#30363d" stroke-width="1"/>
+    <text x="1079" y="391" text-anchor="middle" fill="#c9d1d9" font-family="Ubuntu Mono, monospace" font-size="11.5">By Session Model</text>
   </g>
 
   <!-- Bottom 3 Key Value Pills (Minimal, Scannable in 2 seconds) -->

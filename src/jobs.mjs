@@ -11,6 +11,7 @@ import {
   truncateOutput,
 } from "./runners/common.mjs";
 import { parseClaudeJsonOutput } from "./runners/claude.mjs";
+import { parseAgyJsonOutput } from "./runners/agy.mjs";
 import { extractCodexSessionId } from "./runners/codex.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "./events.mjs";
 import {
@@ -877,6 +878,22 @@ export class JobManager {
             finalStatus = "failed";
             finalError = parsed.text || "Claude Code reported an error.";
           }
+        } else if (parseMode === "agy-json" && finalStatus === "completed") {
+          const raw = readFileBounded(stdoutPath, MAX_JOB_LOG_BYTES);
+          const parsed = parseAgyJsonOutput(raw.text);
+          if (parsed.sessionId) {
+            parsedSessionId = parsed.sessionId;
+          }
+          if (parsed.usage) {
+            finalUsage = parsed.usage;
+          }
+          if (stdoutTruncated || raw.truncated || parsed.parseError) {
+            finalStatus = "failed";
+            finalError = "Antigravity CLI JSON output was truncated or malformed.";
+          } else if (parsed.isError) {
+            finalStatus = "failed";
+            finalError = parsed.text || "Antigravity CLI reported an error.";
+          }
         } else if (engine === "codex" && (!parsedSessionId || !finalUsage)) {
           const rawOut = readFileBounded(stdoutPath, MAX_JOB_LOG_BYTES).text;
           const rawErr = readFileBounded(stderrPath, MAX_JOB_LOG_BYTES).text;
@@ -1193,6 +1210,16 @@ export class JobManager {
       }
       sessionId = parsed.sessionId || sessionId;
       costUsd = typeof parsed.costUsd === "number" ? parsed.costUsd : costUsd;
+      usage = parsed.usage || usage;
+    } else if (meta.parseMode === "agy-json") {
+      const parsed = parseAgyJsonOutput(rawStdout);
+      if (meta.stdoutTruncated || stdoutRead.truncated || parsed.parseError) {
+        output = `Antigravity CLI JSON output was truncated or malformed.\n\n${parsed.text || rawStderr}`;
+      } else {
+        output = parsed.text || rawStderr;
+        structuredOutput = parsed.structuredOutput || null;
+      }
+      sessionId = parsed.sessionId || sessionId;
       usage = parsed.usage || usage;
     } else if (meta.engine === "codex") {
       const jsonl = parseCodexJsonlOutput(rawStdout);
