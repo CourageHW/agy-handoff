@@ -1,5 +1,7 @@
 # agy-handoff
 
+![Antigravity sends a diff to Codex, Claude Code, and the AGY reviewer in parallel. The plugin checks their file references, and the session model combines the findings into one review.](./assets/demo.gif)
+
 Review a change with Codex, Claude Code, and Antigravity from one Antigravity session. Each CLI inspects the same working tree independently. Your session gets the findings and file references so you can check disagreements against the code.
 
 The plugin also supports single-engine reviews, implementation planning, and delegated edits. It runs on Node.js and uses your existing CLI sign-ins.
@@ -28,7 +30,7 @@ A structured cross-review groups findings that appear to describe the same defec
 
 The plugin checks whether each cited file exists and whether the line number is in range. To confirm a bug, open the cited line and check the behavior the reviewer describes. For example, two engines can agree that a function accepts an empty list and both miss a guard in its caller.
 
-For a narrower review, use `/agy-handoff:handoff-review` and specify the engine, files, or commit. To see what a reviewer inspected, open its subagent pane with `/agents` in Antigravity CLI. [View the workflow](./assets/demo.gif)
+For a narrower review, use `/agy-handoff:handoff-review` and specify the engine, files, or commit. To see what a reviewer inspected, open its subagent pane with `/agents` in Antigravity CLI.
 
 ## Planning and delegation
 
