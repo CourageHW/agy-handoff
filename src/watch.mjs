@@ -291,3 +291,58 @@ export async function runWatch({
     process.off("SIGTERM", onStop);
   }
 }
+
+function makeBar(pct, width = 20) {
+  const clamped = Math.max(0, Math.min(100, pct || 0));
+  const filled = Math.round((clamped / 100) * width);
+  return `[${"#".repeat(filled)}${"-".repeat(width - filled)}]`;
+}
+
+export function formatStatsTable(stats) {
+  const s = stats || {};
+  const byStatus = s.byStatus || {};
+  const lines = [
+    `agy-handoff usage & performance stats (${s.jobsDir || "n/a"})`,
+    `${"=".repeat(72)}`,
+    `Jobs: ${s.analyzedJobs ?? 0} analyzed (${s.retainedJobs ?? 0} retained) | Finished: ${s.finishedCount ?? 0} | Success rate: ${s.successRatePct !== null && s.successRatePct !== undefined ? `${s.successRatePct}%` : "n/a"}`,
+    `Status breakdown: completed=${byStatus.completed ?? 0}, failed=${byStatus.failed ?? 0}, timed_out=${byStatus.timed_out ?? 0}, canceled=${byStatus.canceled ?? 0}, running=${byStatus.running ?? 0}`,
+    "",
+    "By Engine:",
+  ];
+
+  for (const engineName of ["codex", "claude"]) {
+    const e = s.byEngine?.[engineName];
+    if (!e) continue;
+    const avg = e.avgDurationMs !== null ? formatElapsed(e.avgDurationMs) : "n/a";
+    const tokens =
+      e.reportedTokens?.jobsWithUsage > 0
+        ? `tokens(in=${e.reportedTokens.input}, out=${e.reportedTokens.output})`
+        : "tokens(unreported)";
+    const cost =
+      e.reportedCostUsd !== null && e.reportedCostUsd !== undefined
+        ? `, cost=$${e.reportedCostUsd}`
+        : "";
+    lines.push(
+      `  ${engineName.padEnd(7)} ${makeBar(e.sharePct)} ${String(e.sharePct.toFixed(1)).padStart(5)}% | total=${e.count} ok=${e.completed} fail=${e.failed} timeout=${e.timedOut} | avg=${avg} | ${tokens}${cost}`,
+    );
+  }
+
+  const models = Object.values(s.byModel || {});
+  if (models.length > 0) {
+    lines.push("");
+    lines.push("By Model:");
+    for (const m of models) {
+      const label = `${m.engine}/${m.model || "cli-default"}`;
+      const avg = m.avgDurationMs !== null ? formatElapsed(m.avgDurationMs) : "n/a";
+      lines.push(
+        `  ${label.padEnd(28)} total=${m.count} ok=${m.completed} fail=${m.failed} timeout=${m.timedOut} avg=${avg}`,
+      );
+    }
+  }
+
+  lines.push("");
+  lines.push(
+    `Note: ${s.scopeNote || "Metrics reflect CLI-reported values on retained job logs only."}`,
+  );
+  return `${lines.join("\n")}\n`;
+}

@@ -26,6 +26,7 @@ import {
   validateTimeoutSec,
 } from "./common.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "../events.mjs";
+import { parseStructuredReviewPayload } from "../cross-review.mjs";
 
 export const MIN_CODEX_VERSION = "0.160.0";
 export const REQUIRED_CODEX_EXEC_FLAGS = [
@@ -227,6 +228,39 @@ export function readAndCleanupOutputFile(filePath) {
   return "";
 }
 
+export function createTempSchemaFile(schemaObj) {
+  if (!schemaObj || typeof schemaObj !== "object" || Array.isArray(schemaObj)) {
+    return null;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-codex-schema-"));
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(dir, 0o700);
+    } catch {
+      // ignore
+    }
+  }
+  const schemaPath = path.join(dir, "schema.json");
+  fs.writeFileSync(schemaPath, JSON.stringify(schemaObj, null, 2), {
+    encoding: "utf8",
+    mode: 0o600,
+  });
+  return schemaPath;
+}
+
+export function cleanupTempSchemaFile(filePath) {
+  if (!filePath) return;
+  try {
+    fs.rmSync(filePath, { force: true });
+    const parentDir = path.dirname(filePath);
+    if (path.basename(parentDir).startsWith("agy-handoff-codex-schema-")) {
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export function buildCodexExecSpec({
   prompt,
   cwd,
@@ -238,6 +272,7 @@ export function buildCodexExecSpec({
   ephemeral = true,
   jsonStream = true,
   outputFile,
+  outputSchemaFile,
 }) {
   if (!prompt || !prompt.trim()) {
     throw new Error("Prompt is required for Codex execution.");
@@ -266,6 +301,9 @@ export function buildCodexExecSpec({
     }
     if (skipGitRepoCheck) {
       args.push("--skip-git-repo-check");
+    }
+    if (outputSchemaFile) {
+      args.push("--output-schema", outputSchemaFile);
     }
     if (outputFile) {
       args.push("-o", outputFile);
@@ -301,6 +339,9 @@ export function buildCodexExecSpec({
   if (skipGitRepoCheck) {
     args.push("--skip-git-repo-check");
   }
+  if (outputSchemaFile) {
+    args.push("--output-schema", outputSchemaFile);
+  }
   if (outputFile) {
     args.push("-o", outputFile);
   }
@@ -329,6 +370,7 @@ export function buildCodexReviewSpec({
   skipGitRepoCheck,
   jsonStream = true,
   outputFile,
+  outputSchemaFile,
 }) {
   if (!VALID_REVIEW_STYLES.has(style)) {
     throw new Error(`Unsupported style "${style}". Allowed: standard, adversarial.`);
@@ -345,10 +387,11 @@ export function buildCodexReviewSpec({
   const safeBase = scope === "base" ? validateGitRef("base", base) : undefined;
   const safeCommit = scope === "commit" ? validateGitRef("commit", commit) : undefined;
 
-  // Use native `codex review` for standard git-scoped reviews without custom prompt overrides.
+  // Use native `codex review` for standard git-scoped reviews without custom prompt/schema overrides.
   const canUseNativeReview =
     style === "standard" &&
     !prompt &&
+    !outputSchemaFile &&
     (scope === "uncommitted" || scope === "base" || scope === "commit");
 
   if (canUseNativeReview) {
@@ -409,6 +452,7 @@ export function buildCodexReviewSpec({
     ephemeral: true,
     jsonStream,
     outputFile,
+    outputSchemaFile,
   });
 }
 
@@ -454,6 +498,10 @@ async function executeCodex(spec, options) {
     const hint = `Unsupported or outdated Codex CLI flags. agy-handoff requires Codex CLI >= ${MIN_CODEX_VERSION}. Run \`npm install -g @openai/codex@latest\` and verify with \`handoff_doctor\`.`;
     rawOutput = rawOutput ? `${rawOutput}\n\n${hint}` : hint;
   }
+  const structuredOutput =
+    options.outputSchema && res.ok
+      ? parseStructuredReviewPayload(rawOutput).parsed
+      : null;
   const output = truncateOutput(rawOutput || res.stderr);
   const sessionId =
     jsonl.sessionId || extractCodexSessionId(`${res.stderr}\n${res.stdout}`);
@@ -467,6 +515,7 @@ async function executeCodex(spec, options) {
     durationMs: res.durationMs,
     sessionId,
     usage: jsonl.usage || null,
+    structuredOutput,
     output,
     stderr: res.ok ? "" : res.stderr,
   };
@@ -477,17 +526,46 @@ export async function runCodexExec(options) {
   const skipGitRepoCheck = options.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
   const ephemeral = options.ephemeral ?? false;
   const outputFile = options.sessionId ? null : createTempOutputFile();
-  const spec = buildCodexExecSpec({
-    ...options,
-    skipGitRepoCheck,
-    ephemeral,
-    outputFile,
-  });
-  return executeCodex(spec, options);
+  const outputSchemaFile = options.outputSchema
+    ? createTempSchemaFile(options.outputSchema)
+    : null;
+  try {
+    const spec = buildCodexExecSpec({
+      ...options,
+      skipGitRepoCheck,
+      ephemeral,
+      outputFile,
+      outputSchemaFile,
+    });
+    return await executeCodex(spec, options);
+  } finally {
+    cleanupTempSchemaFile(outputSchemaFile);
+  }
 }
 
 export async function runCodexReview(options) {
-  const outputFile = createTempOutputFile("agy-handoff-codex-review");
-  const spec = buildCodexReviewSpec({ ...options, outputFile });
-  return executeCodex(spec, options);
+  const outputSchemaFile = options.outputSchema
+    ? createTempSchemaFile(options.outputSchema)
+    : null;
+  let outputFile = null;
+  try {
+    const spec = buildCodexReviewSpec({
+      ...options,
+      outputFile: "__TEMP_IF_EXEC__",
+      outputSchemaFile,
+    });
+    // Allocate a temp last-message file only when falling back to `codex exec` (not native `codex review`).
+    if (spec.args[0] === "exec") {
+      outputFile = createTempOutputFile("agy-handoff-codex-review");
+      const outIdx = spec.args.indexOf("-o");
+      if (outIdx !== -1 && outIdx + 1 < spec.args.length) {
+        spec.args[outIdx + 1] = outputFile;
+        spec.outputFile = outputFile;
+      }
+    }
+    return await executeCodex(spec, options);
+  } finally {
+    readAndCleanupOutputFile(outputFile);
+    cleanupTempSchemaFile(outputSchemaFile);
+  }
 }

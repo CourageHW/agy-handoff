@@ -341,6 +341,7 @@ test("parseClaudeJsonOutput parses single JSON, stream-json JSONL, and broken JS
     sessionId: "sess_123",
     costUsd: 0.042,
     usage: { input_tokens: 12, output_tokens: 5 },
+    structuredOutput: null,
     isError: false,
     parseError: false,
   });
@@ -364,9 +365,22 @@ test("parseClaudeJsonOutput parses single JSON, stream-json JSONL, and broken JS
     sessionId: "sess_stream",
     costUsd: 0.011,
     usage: null,
+    structuredOutput: null,
     isError: false,
     parseError: false,
   });
+
+  const withStructured = parseClaudeJsonOutput(
+    JSON.stringify({
+      type: "result",
+      result: "",
+      structured_output: { summary: "ok", findings: [] },
+      session_id: "sess_struct",
+      is_error: false,
+    }),
+  );
+  assert.deepEqual(withStructured.structuredOutput, { summary: "ok", findings: [] });
+  assert.equal(withStructured.text, '{"summary":"ok","findings":[]}');
 
   const plain = parseClaudeJsonOutput("Plain output text");
   assert.equal(plain.text, "Plain output text");
@@ -602,6 +616,21 @@ test("parseSemver, compareSemver, detectMissingFlags, and CLI compatibility chec
     const codexFail = await runCodexExec({ prompt: "hi", cwd: dir });
     assert.equal(codexFail.ok, false);
     assert.match(codexFail.output, new RegExp(MIN_CODEX_VERSION.replace(/\./g, "\\.")));
+
+    const structuredClaude = buildClaudeReviewSpec({
+      cwd: tmpDir,
+      jsonSchema: { type: "object", properties: { summary: { type: "string" } } },
+    });
+    assert.ok(structuredClaude.args.includes("--json-schema"));
+
+    const structuredCodex = buildCodexReviewSpec({
+      cwd: tmpDir,
+      style: "standard",
+      scope: "uncommitted",
+      outputSchemaFile: "/tmp/schema.json",
+    });
+    assert.equal(structuredCodex.args[0], "exec");
+    assert.ok(structuredCodex.args.includes("--output-schema"));
   } finally {
     if (prevClaude === undefined) delete process.env.AGY_HANDOFF_CLAUDE_BIN;
     else process.env.AGY_HANDOFF_CLAUDE_BIN = prevClaude;

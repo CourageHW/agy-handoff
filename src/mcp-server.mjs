@@ -5,9 +5,21 @@ import { pathToFileURL } from "node:url";
 import { JobManager } from "./jobs.mjs";
 import {
   getEffectiveConfigSummary,
+  loadConfig,
   resolveEngineConfig,
   updateConfig,
 } from "./config.mjs";
+import {
+  captureGitDirtySnapshot,
+  computeGitDelta,
+  createExecutionEvidenceTracker,
+  normalizeAndFormatContext,
+} from "./context.mjs";
+import {
+  STRUCTURED_REVIEW_SCHEMA,
+  synthesizeStructuredCrossReview,
+} from "./cross-review.mjs";
+import { VALID_TASK_TYPES, resolveAutoEngine } from "./routing.mjs";
 import {
   isInsideGitRepo,
   terminateAllForegroundCommands,
@@ -33,10 +45,22 @@ import {
 
 const SERVER_INFO = {
   name: "agy-handoff",
-  version: "0.1.0",
+  version: "0.2.0",
 };
 
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-03-26", "2024-11-05"];
+
+const CONTEXT_SCHEMA = {
+  type: "object",
+  description:
+    "Optional structured handoff context (scoped files, prior summary, constraints, acceptance criteria) to prevent redundant exploration.",
+  properties: {
+    files: { type: "array", items: { type: "string" } },
+    summary: { type: "string" },
+    constraints: { type: "array", items: { type: "string" } },
+    acceptanceCriteria: { type: "array", items: { type: "string" } },
+  },
+};
 
 export const TOOLS = [
   {
@@ -52,14 +76,21 @@ export const TOOLS = [
   {
     name: "handoff_review",
     description:
-      "Run a read-only code review using local Codex or Claude Code CLI. Supports standard or adversarial review styles and uncommitted, base-branch, commit, or custom scopes.",
+      "Run a read-only code review using local Codex or Claude Code CLI (or engine: 'auto'). Supports standard or adversarial review styles, uncommitted/base/commit/custom scopes, scoped context, and structured JSON output.",
     inputSchema: {
       type: "object",
       properties: {
         engine: {
           type: "string",
-          enum: ["codex", "claude"],
-          description: "Which external CLI to run the review with.",
+          enum: ["codex", "claude", "auto"],
+          description:
+            "Which external CLI to run the review with ('auto' selects transparently via routing policy and CLI health).",
+        },
+        taskType: {
+          type: "string",
+          enum: VALID_TASK_TYPES,
+          default: "review",
+          description: "Optional task classification used when engine is 'auto'.",
         },
         style: {
           type: "string",
@@ -85,6 +116,13 @@ export const TOOLS = [
         prompt: {
           type: "string",
           description: "Optional extra review focus or custom target files/instructions.",
+        },
+        context: CONTEXT_SCHEMA,
+        structured: {
+          type: "boolean",
+          default: false,
+          description:
+            "Request structured JSON review findings compatible with citation verification.",
         },
         model: {
           type: "string",
@@ -125,19 +163,27 @@ export const TOOLS = [
   {
     name: "handoff_delegate",
     description:
-      "Delegate an investigation, debugging, or coding task to local Codex or Claude Code CLI. Defaults to read-only mode for safety.",
+      "Delegate an investigation, debugging, or coding task to local Codex or Claude Code CLI (or engine: 'auto'). Defaults to read-only mode for safety.",
     inputSchema: {
       type: "object",
       properties: {
         engine: {
           type: "string",
-          enum: ["codex", "claude"],
-          description: "Which external CLI to delegate the task to.",
+          enum: ["codex", "claude", "auto"],
+          description:
+            "Which external CLI to delegate the task to ('auto' selects transparently via routing policy and CLI health).",
+        },
+        taskType: {
+          type: "string",
+          enum: VALID_TASK_TYPES,
+          default: "general",
+          description: "Optional task classification used when engine is 'auto'.",
         },
         prompt: {
           type: "string",
           description: "Clear, self-contained task description for the external CLI.",
         },
+        context: CONTEXT_SCHEMA,
         mode: {
           type: "string",
           enum: ["read-only", "workspace-write"],
@@ -206,6 +252,13 @@ export const TOOLS = [
         base: { type: "string" },
         commit: { type: "string" },
         prompt: { type: "string" },
+        context: CONTEXT_SCHEMA,
+        structured: {
+          type: "boolean",
+          default: false,
+          description:
+            "Request structured findings from both engines and attach consensus, conflicts, unique findings, and mechanical citation checks.",
+        },
         codexModel: { type: "string" },
         codexEffort: {
           type: "string",
@@ -234,7 +287,7 @@ export const TOOLS = [
   {
     name: "handoff_config",
     description:
-      "Inspect, update, or reset default Codex and Claude Code models and reasoning efforts globally or per command (review, delegate, cross-review).",
+      "Inspect, update, or reset default Codex and Claude Code models, reasoning efforts, and auto-routing policies globally or per command.",
     inputSchema: {
       type: "object",
       properties: {
@@ -259,6 +312,11 @@ export const TOOLS = [
         claudeEffort: { type: "string" },
         defaults: { type: "object" },
         commands: { type: "object" },
+        routing: {
+          type: "object",
+          description:
+            "Optional routing preferences: { policy: 'balanced'|'prefer-codex'|'prefer-claude'|'least-used', taskTypes: { review|debugging|implementation|architecture|general: 'codex'|'claude'|'auto'|null } }.",
+        },
       },
       additionalProperties: false,
     },
@@ -333,6 +391,33 @@ export const TOOLS = [
         jobId: {
           type: "string",
           description: "Job ID to cancel.",
+        },
+      },
+      required: ["jobId"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "handoff_job_retry",
+    description:
+      "Safely replay a finished read-only job (optionally switching to the alternate engine). Strictly refuses workspace-write jobs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        jobId: {
+          type: "string",
+          description: "Job ID of a finished read-only job to retry.",
+        },
+        fallbackEngine: {
+          type: "boolean",
+          default: false,
+          description: "Switch to the alternate engine (Codex <-> Claude) on retry.",
+        },
+        timeoutSec: {
+          type: "integer",
+          minimum: 10,
+          maximum: 3600,
+          description: "Optional timeout override in seconds.",
         },
       },
       required: ["jobId"],
@@ -419,7 +504,19 @@ export function validateToolArgs(toolName, rawArgs) {
 
 async function runTrackedForeground(
   jobManager,
-  { engine, action, cwd, model, effort, onProgress },
+  {
+    engine,
+    action,
+    cwd,
+    model,
+    effort,
+    mode = "read-only",
+    structured = false,
+    handoffContext = null,
+    requestParams = null,
+    jsonStream = true,
+    onProgress,
+  },
   fn,
 ) {
   const tracker = jobManager.beginForegroundRun({
@@ -428,9 +525,22 @@ async function runTrackedForeground(
     cwd,
     model: model || null,
     effort: effort || null,
+    mode,
+    structured,
+    handoffContext,
+    requestParams,
   });
 
+  const evidenceTracker = createExecutionEvidenceTracker({
+    action,
+    mode,
+    jsonStream,
+  });
+  const beforeGit =
+    mode === "workspace-write" ? await captureGitDirtySnapshot(cwd) : null;
+
   const handleEvent = (ev) => {
+    evidenceTracker.recordEvent(ev);
     tracker.recordEvent(ev);
     if (typeof onProgress === "function") {
       try {
@@ -446,6 +556,15 @@ async function runTrackedForeground(
 
   try {
     const result = await fn(handleEvent);
+    const afterGit =
+      mode === "workspace-write" ? await captureGitDirtySnapshot(cwd) : null;
+    const gitDelta =
+      beforeGit && afterGit ? computeGitDelta(beforeGit, afterGit) : null;
+    const executionEvidence = evidenceTracker.finalize({
+      ok: Boolean(result.ok),
+      gitDelta,
+    });
+
     await tracker.finish({
       status: result.ok ? "completed" : result.timedOut ? "timed_out" : "failed",
       exitCode: result.exitCode,
@@ -453,20 +572,148 @@ async function runTrackedForeground(
       sessionId: result.sessionId || null,
       costUsd: typeof result.costUsd === "number" ? result.costUsd : null,
       usage: result.usage || null,
+      executionEvidence,
     });
     return {
       ...result,
       jobId: tracker.jobId,
       eventsPath: tracker.eventsPath,
+      executionEvidence,
     };
   } catch (err) {
     await tracker.finish({
       status: "failed",
       exitCode: -1,
       error: err.message,
+      executionEvidence: evidenceTracker.finalize({ ok: false }),
     });
     throw err;
   }
+}
+
+function buildBackgroundReviewJobSpec({
+  engine,
+  effectiveArgs,
+  resolved,
+  jobManager,
+  timeoutSec,
+  handoffContext,
+  retryOf,
+  requestParams,
+}) {
+  if (engine === "codex") {
+    const binary = findCodexBinary();
+    if (!binary) throw new Error("Codex CLI (`codex`) not found in PATH.");
+    const jobId = jobManager.allocateJobId("codex");
+    const outputFile = jobManager.outputFilePath(jobId);
+    const outputSchemaFile = effectiveArgs.outputSchema
+      ? jobManager.schemaPath(jobId)
+      : null;
+    const spec = buildCodexReviewSpec({
+      ...effectiveArgs,
+      outputFile,
+      outputSchemaFile,
+    });
+    return {
+      jobId,
+      engine: "codex",
+      action: "review",
+      mode: "read-only",
+      command: binary,
+      args: spec.args,
+      cwd: spec.cwd,
+      stdin: spec.stdin,
+      timeoutMs: (timeoutSec || 600) * 1000,
+      hasOutputFile: Boolean(spec.outputFile),
+      parseMode: "text",
+      model: resolved.model || null,
+      effort: resolved.effort || null,
+      handoffContext,
+      retryOf,
+      structured: Boolean(effectiveArgs.outputSchema || requestParams?.structured),
+      outputSchema: effectiveArgs.outputSchema || null,
+      requestParams,
+    };
+  }
+  const binary = findClaudeBinary();
+  if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
+  const spec = buildClaudeReviewSpec(effectiveArgs);
+  return {
+    engine: "claude",
+    action: "review",
+    mode: "read-only",
+    command: binary,
+    args: spec.args,
+    cwd: spec.cwd,
+    stdin: spec.stdin,
+    timeoutMs: (timeoutSec || 600) * 1000,
+    parseMode: "claude-json",
+    model: resolved.model || null,
+    effort: resolved.effort || null,
+    handoffContext,
+    retryOf,
+    structured: Boolean(effectiveArgs.jsonSchema || requestParams?.structured),
+    requestParams,
+  };
+}
+
+function buildBackgroundDelegateJobSpec({
+  engine,
+  mode,
+  effectiveArgs,
+  resolved,
+  jobManager,
+  timeoutSec,
+  handoffContext,
+  retryOf,
+  requestParams,
+}) {
+  if (engine === "codex") {
+    const binary = findCodexBinary();
+    if (!binary) throw new Error("Codex CLI (`codex`) not found in PATH.");
+    const jobId = jobManager.allocateJobId("codex");
+    const outputFile = effectiveArgs.sessionId
+      ? null
+      : jobManager.outputFilePath(jobId);
+    const spec = buildCodexExecSpec({ ...effectiveArgs, outputFile });
+    return {
+      jobId,
+      engine: "codex",
+      action: "delegate",
+      mode,
+      command: binary,
+      args: spec.args,
+      cwd: spec.cwd,
+      stdin: spec.stdin,
+      timeoutMs: (timeoutSec || 600) * 1000,
+      hasOutputFile: Boolean(spec.outputFile),
+      parseMode: "text",
+      model: resolved.model || null,
+      effort: resolved.effort || null,
+      handoffContext,
+      retryOf,
+      requestParams: mode === "read-only" ? requestParams : null,
+    };
+  }
+  const binary = findClaudeBinary();
+  if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
+  const spec = buildClaudeExecSpec(effectiveArgs);
+  return {
+    engine: "claude",
+    action: "delegate",
+    mode,
+    command: binary,
+    args: spec.args,
+    cwd: spec.cwd,
+    stdin: spec.stdin,
+    timeoutMs: (timeoutSec || 600) * 1000,
+    parseMode: "claude-json",
+    model: resolved.model || null,
+    effort: resolved.effort || null,
+    handoffContext,
+    retryOf,
+    requestParams: mode === "read-only" ? requestParams : null,
+  };
 }
 
 export async function handleToolCall(
@@ -480,6 +727,7 @@ export async function handleToolCall(
 
   switch (name) {
     case "handoff_doctor": {
+      const staleJobsRecovered = jobManager.recoverStaleJobs();
       const [codex, claude] = await Promise.all([inspectCodex(), inspectClaude()]);
       const summary = getEffectiveConfigSummary();
       return {
@@ -488,23 +736,46 @@ export async function handleToolCall(
         engines: { codex, claude },
         configPath: summary.configPath,
         modelDefaults: summary.effective,
+        routingConfig: summary.config?.routing || null,
+        staleJobsRecovered,
       };
     }
 
     case "handoff_review": {
-      const { engine, background = false } = args;
+      const { background = false } = args;
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
       const scope = args.scope || "uncommitted";
       const resolvedCwd = validateCwd(args.cwd);
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
+      const effectivePrompt = args.prompt
+        ? `${ctx.promptPrefix}${args.prompt}`
+        : ctx.promptPrefix.trim() || undefined;
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? (scope === "custom" ? !isInsideGitRepo(resolvedCwd) : false);
 
-      const resolved = resolveEngineConfig("review", engine, {
+      let selectedEngine = args.engine;
+      let routingDecision = null;
+      if (selectedEngine === "auto") {
+        const routed = await resolveAutoEngine({
+          taskType: args.taskType || "review",
+          mode: "read-only",
+          effort: args.effort,
+          model: args.model,
+          config: loadConfig(),
+          jobManager,
+        });
+        selectedEngine = routed.selectedEngine;
+        routingDecision = routed.routingDecision;
+      }
+
+      const resolved = resolveEngineConfig("review", selectedEngine, {
         model: args.model,
         effort: args.effort,
       });
       const effectiveArgs = {
         ...args,
+        engine: selectedEngine,
+        prompt: effectivePrompt,
         cwd: resolvedCwd,
         scope,
         skipGitRepoCheck,
@@ -512,84 +783,121 @@ export async function handleToolCall(
         model: resolved.model,
         effort: resolved.effort,
         signal,
+        ...(args.structured
+          ? selectedEngine === "codex"
+            ? { outputSchema: STRUCTURED_REVIEW_SCHEMA }
+            : { jsonSchema: STRUCTURED_REVIEW_SCHEMA }
+          : {}),
+      };
+
+      const requestParams = {
+        style: args.style || "standard",
+        scope,
+        base: args.base,
+        commit: args.commit,
+        prompt: effectivePrompt,
+        structured: Boolean(args.structured),
+        skipGitRepoCheck,
+        timeoutSec,
       };
 
       if (background) {
-        if (engine === "codex") {
-          const binary = findCodexBinary();
-          if (!binary) throw new Error("Codex CLI (`codex`) not found in PATH.");
-          const jobId = jobManager.allocateJobId("codex");
-          const outputFile = jobManager.outputFilePath(jobId);
-          const spec = buildCodexReviewSpec({ ...effectiveArgs, outputFile });
-          return jobManager.startJob({
-            jobId,
-            engine: "codex",
-            action: "review",
-            command: binary,
-            args: spec.args,
-            cwd: spec.cwd,
-            stdin: spec.stdin,
-            timeoutMs: (timeoutSec || 600) * 1000,
-            hasOutputFile: Boolean(spec.outputFile),
-            parseMode: "text",
-            model: resolved.model || null,
-            effort: resolved.effort || null,
-          });
-        }
-        const binary = findClaudeBinary();
-        if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
-        const spec = buildClaudeReviewSpec(effectiveArgs);
-        return jobManager.startJob({
-          engine: "claude",
-          action: "review",
-          command: binary,
-          args: spec.args,
-          cwd: spec.cwd,
-          stdin: spec.stdin,
-          timeoutMs: (timeoutSec || 600) * 1000,
-          parseMode: "claude-json",
-          model: resolved.model || null,
-          effort: resolved.effort || null,
+        const jobSpec = buildBackgroundReviewJobSpec({
+          engine: selectedEngine,
+          effectiveArgs,
+          resolved,
+          jobManager,
+          timeoutSec,
+          handoffContext: ctx.metadata,
+          requestParams,
         });
+        const started = jobManager.startJob(jobSpec);
+        return {
+          ...started,
+          ...(routingDecision ? { routingDecision } : {}),
+          ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
+        };
       }
 
-      return runTrackedForeground(
+      const usesCodexNative =
+        selectedEngine === "codex" &&
+        (args.style || "standard") === "standard" &&
+        !effectivePrompt &&
+        !args.structured &&
+        (scope === "uncommitted" || scope === "base" || scope === "commit");
+
+      const result = await runTrackedForeground(
         jobManager,
         {
-          engine,
+          engine: selectedEngine,
           action: "review",
           cwd: resolvedCwd,
           model: resolved.model,
           effort: resolved.effort,
+          mode: "read-only",
+          structured: Boolean(args.structured),
+          handoffContext: ctx.metadata,
+          requestParams,
+          jsonStream: !usesCodexNative,
           onProgress,
         },
         (onEvent) =>
-          engine === "codex"
+          selectedEngine === "codex"
             ? runCodexReview({ ...effectiveArgs, onEvent })
             : runClaudeReview({ ...effectiveArgs, onEvent }),
       );
+      return {
+        ...result,
+        ...(routingDecision ? { routingDecision } : {}),
+        ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
+      };
     }
 
     case "handoff_delegate": {
-      const { engine, background = false } = args;
+      const { background = false } = args;
       const mode = args.mode || "read-only";
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
       const resolvedCwd = validateCwd(args.cwd);
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
+      const effectivePrompt = `${ctx.promptPrefix}${args.prompt}`;
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
+
+      let selectedEngine = args.engine;
+      let routingDecision = null;
+      if (selectedEngine === "auto") {
+        if (args.sessionId) {
+          throw new Error(
+            'Cannot combine `sessionId` with `engine: "auto"`; specify the engine that owns the session.',
+          );
+        }
+        const routed = await resolveAutoEngine({
+          taskType: args.taskType || "general",
+          mode,
+          effort: args.effort,
+          model: args.model,
+          config: loadConfig(),
+          jobManager,
+        });
+        selectedEngine = routed.selectedEngine;
+        routingDecision = routed.routingDecision;
+      }
+
       const sandboxModel =
         mode === "workspace-write"
-          ? engine === "codex"
+          ? selectedEngine === "codex"
             ? "os-sandbox (workspace-write)"
             : "restricted-file-tools + acceptEdits + unsandboxed-bash"
           : undefined;
 
-      const resolved = resolveEngineConfig("delegate", engine, {
+      const resolved = resolveEngineConfig("delegate", selectedEngine, {
         model: args.model,
         effort: args.effort,
       });
       const effectiveArgs = {
         ...args,
+        engine: selectedEngine,
+        prompt: effectivePrompt,
         mode,
         cwd: resolvedCwd,
         skipGitRepoCheck,
@@ -600,64 +908,66 @@ export async function handleToolCall(
         signal,
       };
 
+      const requestParams =
+        mode === "read-only"
+          ? {
+              prompt: effectivePrompt,
+              mode: "read-only",
+              sessionId: args.sessionId,
+              skipGitRepoCheck,
+              timeoutSec,
+            }
+          : null;
+
       if (background) {
-        let started;
-        if (engine === "codex") {
-          const binary = findCodexBinary();
-          if (!binary) throw new Error("Codex CLI (`codex`) not found in PATH.");
-          const jobId = jobManager.allocateJobId("codex");
-          const outputFile = args.sessionId ? null : jobManager.outputFilePath(jobId);
-          const spec = buildCodexExecSpec({ ...effectiveArgs, outputFile });
-          started = jobManager.startJob({
-            jobId,
-            engine: "codex",
-            action: "delegate",
-            command: binary,
-            args: spec.args,
-            cwd: spec.cwd,
-            stdin: spec.stdin,
-            timeoutMs: (timeoutSec || 600) * 1000,
-            hasOutputFile: Boolean(spec.outputFile),
-            parseMode: "text",
-            model: resolved.model || null,
-            effort: resolved.effort || null,
-          });
-        } else {
-          const binary = findClaudeBinary();
-          if (!binary) throw new Error("Claude Code CLI (`claude`) not found in PATH.");
-          const spec = buildClaudeExecSpec(effectiveArgs);
-          started = jobManager.startJob({
-            engine: "claude",
-            action: "delegate",
-            command: binary,
-            args: spec.args,
-            cwd: spec.cwd,
-            stdin: spec.stdin,
-            timeoutMs: (timeoutSec || 600) * 1000,
-            parseMode: "claude-json",
-            model: resolved.model || null,
-            effort: resolved.effort || null,
-          });
-        }
-        return sandboxModel ? { ...started, sandboxModel } : started;
+        const beforeGit =
+          mode === "workspace-write"
+            ? await captureGitDirtySnapshot(resolvedCwd)
+            : null;
+        const jobSpec = buildBackgroundDelegateJobSpec({
+          engine: selectedEngine,
+          mode,
+          effectiveArgs,
+          resolved,
+          jobManager,
+          timeoutSec,
+          handoffContext: ctx.metadata,
+          requestParams,
+        });
+        const started = jobManager.startJob({ ...jobSpec, beforeGit });
+        return {
+          ...started,
+          ...(sandboxModel ? { sandboxModel } : {}),
+          ...(routingDecision ? { routingDecision } : {}),
+          ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
+        };
       }
 
       const result = await runTrackedForeground(
         jobManager,
         {
-          engine,
+          engine: selectedEngine,
           action: "delegate",
           cwd: resolvedCwd,
           model: resolved.model,
           effort: resolved.effort,
+          mode,
+          handoffContext: ctx.metadata,
+          requestParams,
+          jsonStream: true,
           onProgress,
         },
         (onEvent) =>
-          engine === "codex"
+          selectedEngine === "codex"
             ? runCodexExec({ ...effectiveArgs, onEvent })
             : runClaudeExec({ ...effectiveArgs, onEvent }),
       );
-      return sandboxModel ? { ...result, sandboxModel } : result;
+      return {
+        ...result,
+        ...(sandboxModel ? { sandboxModel } : {}),
+        ...(routingDecision ? { routingDecision } : {}),
+        ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
+      };
     }
 
     case "handoff_cross_review": {
@@ -674,8 +984,13 @@ export async function handleToolCall(
       const style = args.style || "adversarial";
       const scope = args.scope || "uncommitted";
       const resolvedCwd = validateCwd(args.cwd);
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
+      const effectivePrompt = args.prompt
+        ? `${ctx.promptPrefix}${args.prompt}`
+        : ctx.promptPrefix.trim() || undefined;
       const skipGitRepoCheck =
         args.skipGitRepoCheck ?? (scope === "custom" ? !isInsideGitRepo(resolvedCwd) : false);
+      const structured = Boolean(args.structured);
 
       const codexCfg = resolveEngineConfig("cross-review", "codex", {
         model: args.codexModel,
@@ -707,6 +1022,13 @@ export async function handleToolCall(
               cwd: resolvedCwd,
               model: codexCfg.model,
               effort: codexCfg.effort,
+              mode: "read-only",
+              handoffContext: ctx.metadata,
+              jsonStream:
+                structured ||
+                style !== "standard" ||
+                Boolean(effectivePrompt) ||
+                scope === "custom",
               onProgress: ({ message }) => {
                 if (typeof onProgress === "function") {
                   progressSeq += 1;
@@ -720,13 +1042,14 @@ export async function handleToolCall(
                 scope,
                 base: args.base,
                 commit: args.commit,
-                prompt: args.prompt,
+                prompt: effectivePrompt,
                 model: codexCfg.model,
                 effort: codexCfg.effort,
                 cwd: resolvedCwd,
                 skipGitRepoCheck,
                 timeoutSec,
                 signal,
+                outputSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
                 onEvent: (ev) => {
                   onEvent(ev);
                   void emitCombinedProgress;
@@ -758,6 +1081,9 @@ export async function handleToolCall(
               cwd: resolvedCwd,
               model: claudeCfg.model,
               effort: claudeCfg.effort,
+              mode: "read-only",
+              handoffContext: ctx.metadata,
+              jsonStream: true,
               onProgress: ({ message }) => {
                 if (typeof onProgress === "function") {
                   progressSeq += 1;
@@ -771,12 +1097,13 @@ export async function handleToolCall(
                 scope,
                 base: args.base,
                 commit: args.commit,
-                prompt: args.prompt,
+                prompt: effectivePrompt,
                 model: claudeCfg.model,
                 effort: claudeCfg.effort,
                 cwd: resolvedCwd,
                 timeoutSec,
                 signal,
+                jsonSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
                 onEvent,
               }),
           ).catch((err) => ({
@@ -802,10 +1129,49 @@ export async function handleToolCall(
       const enginesFailed = allResults.filter((r) => !r.skipped && !r.ok).length;
       const enginesSkipped = allResults.filter((r) => r.skipped).length;
       const ok = enginesSucceeded > 0;
+
+      let structuredSynthesis;
+      if (structured) {
+        try {
+          structuredSynthesis = synthesizeStructuredCrossReview({
+            codexOutput:
+              !codexResult.skipped && codexResult.ok ? codexResult.output : "",
+            codexStructured:
+              !codexResult.skipped && codexResult.ok
+                ? codexResult.structuredOutput || null
+                : null,
+            claudeOutput:
+              !claudeResult.skipped && claudeResult.ok ? claudeResult.output : "",
+            claudeStructured:
+              !claudeResult.skipped && claudeResult.ok
+                ? claudeResult.structuredOutput || null
+                : null,
+            cwd: resolvedCwd,
+          });
+        } catch (err) {
+          structuredSynthesis = {
+            summaries: { codex: null, claude: null },
+            consensus: [],
+            conflicts: [],
+            uniqueCodex: [],
+            uniqueClaude: [],
+            parseErrors: { codex: err.message, claude: err.message },
+            citationSummary: {
+              totalFindings: 0,
+              validCitations: 0,
+              fileOnlyCitations: 0,
+              invalidOrMissingCitations: 0,
+              error: err.message,
+            },
+          };
+        }
+      }
+
       return {
         ok,
         style,
         scope,
+        ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
         summary: {
           totalDurationMs: Date.now() - startedAt,
           enginesAttempted,
@@ -817,6 +1183,7 @@ export async function handleToolCall(
           codex: codexCfg,
           claude: claudeCfg,
         },
+        ...(structuredSynthesis ? { structuredSynthesis } : {}),
         results: {
           codex: codexResult,
           claude: claudeResult,
@@ -848,6 +1215,99 @@ export async function handleToolCall(
 
     case "handoff_job_cancel": {
       return jobManager.cancelJob(args.jobId);
+    }
+
+    case "handoff_job_retry": {
+      const timeoutSec = validateTimeoutSec(args.timeoutSec);
+      const fallbackEngine = Boolean(args.fallbackEngine);
+      const meta = jobManager.readMeta(args.jobId);
+      if (!meta) {
+        throw new Error(`Job not found: ${args.jobId}`);
+      }
+      if (meta.status === "running" || jobManager.activeChildren.has(args.jobId)) {
+        throw new Error(`Job is still running: ${args.jobId}`);
+      }
+      const effectiveMode = meta.mode ?? "unknown";
+      if (effectiveMode !== "read-only") {
+        throw new Error(
+          `Refusing to retry non-read-only job "${args.jobId}" (mode=${effectiveMode}). Only read-only jobs can be safely replayed.`,
+        );
+      }
+      if (!meta.retryable || !meta.replaySpec?.requestParams) {
+        throw new Error(
+          `Job "${args.jobId}" is not retryable (prompt exceeded 64 KB, used '--last', or lacked bounded request metadata).`,
+        );
+      }
+
+      const req = meta.replaySpec.requestParams;
+      if (req.sessionId === "last") {
+        throw new Error(
+          `Refusing to retry job "${args.jobId}": '--last' session target can drift across concurrent runs.`,
+        );
+      }
+      if (fallbackEngine && req.sessionId) {
+        throw new Error(
+          `Cannot use fallbackEngine=true when retrying session-resumed job "${args.jobId}".`,
+        );
+      }
+
+      const targetEngine = fallbackEngine
+        ? meta.engine === "codex"
+          ? "claude"
+          : "codex"
+        : meta.engine;
+      const targetCmd = meta.action === "review" ? "review" : "delegate";
+      const resolved = resolveEngineConfig(targetCmd, targetEngine);
+      const resolvedCwd = validateCwd(meta.cwd);
+      const effTimeoutSec = timeoutSec ?? req.timeoutSec;
+      const isStructured = Boolean(req.structured ?? meta.structured);
+
+      const overrideSpec =
+        targetCmd === "review"
+          ? buildBackgroundReviewJobSpec({
+              engine: targetEngine,
+              effectiveArgs: {
+                ...req,
+                structured: isStructured,
+                cwd: resolvedCwd,
+                model: resolved.model,
+                effort: resolved.effort,
+                ...(isStructured
+                  ? targetEngine === "codex"
+                    ? { outputSchema: STRUCTURED_REVIEW_SCHEMA }
+                    : { jsonSchema: STRUCTURED_REVIEW_SCHEMA }
+                  : {}),
+              },
+              resolved,
+              jobManager,
+              timeoutSec: effTimeoutSec,
+              handoffContext: meta.handoffContext || null,
+              retryOf: meta.id,
+              requestParams: { ...req, structured: isStructured },
+            })
+          : buildBackgroundDelegateJobSpec({
+              engine: targetEngine,
+              mode: "read-only",
+              effectiveArgs: {
+                ...req,
+                cwd: resolvedCwd,
+                mode: "read-only",
+                ephemeral: false,
+                model: resolved.model,
+                effort: resolved.effort,
+              },
+              resolved,
+              jobManager,
+              timeoutSec: effTimeoutSec,
+              handoffContext: meta.handoffContext || null,
+              retryOf: meta.id,
+              requestParams: req,
+            });
+
+      return jobManager.retryJob(args.jobId, {
+        overrideSpec,
+        timeoutMs: effTimeoutSec ? effTimeoutSec * 1000 : null,
+      });
     }
 
     default:

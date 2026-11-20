@@ -121,6 +121,7 @@ test("MCP stdio server handles initialize, tools/list, and handoff_doctor", asyn
       "handoff_job_status",
       "handoff_job_result",
       "handoff_job_cancel",
+      "handoff_job_retry",
     ]);
 
     const doctorPayload = JSON.parse(responses[2].result.content[0].text);

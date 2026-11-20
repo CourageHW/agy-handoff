@@ -13,12 +13,14 @@ Run a read-only code review using the local `codex` or `claude` CLI via `agy-han
 ## Procedure
 
 1. **Determine review parameters** from the user's request:
-   - `engine`: `"codex"` or `"claude"` (if unspecified, check availability via `handoff_doctor` or default to the installed engine).
-   - `style`: `"standard"` for general bug/regression review, or `"adversarial"` when the user asks for a strict, skeptical, architecture/security/edge-case challenge.
-   - `scope`: `"uncommitted"` (default), `"base"` (requires `base` branch), `"commit"` (requires `commit` SHA), or `"custom"` (provide target files/focus in `prompt`).
-   - `model` / `effort`: optional overrides; if omitted, uses the configured `review` or global default (built-in: Codex `gpt-6.2-sol` `high`, Claude `claude-opus-5-5` `high`; configure via `/agy-handoff:handoff-models` or `handoff_config`).
+   - `engine`: `"codex"`, `"claude"`, or `"auto"` (when `"auto"` is chosen, `handoff_review` selects transparently via CLI health and configured `routing` policy).
+   - `style`: `"standard"` for general bug/regression review, or `"adversarial"` for strict architecture/security/race-case challenges.
+   - `scope`: `"uncommitted"` (default), `"base"` (requires `base`), `"commit"` (requires `commit`), or `"custom"`.
+   - `context`: optional `{ files, summary, constraints }` when target paths or prior findings are already known to avoid redundant repo sweeps.
+   - `structured`: optional `true` to enforce JSON finding schema (`severity`, `file`, `line`, `title`, `detail`, `fix`).
+   - `model` / `effort`: optional overrides; if omitted, uses `review` or global defaults (`gpt-6.2-sol` `high`, `claude-opus-5-5` `high`).
    - `cwd`: active repository root path.
-   - `background`: set `true` for large diffs if the user wants to keep working while the review runs.
+   - `background`: set `true` for large diffs if the user wants to continue working.
 
 2. **Invoke the tool (or visible subagent pane)**:
    - Prefer `invoke_subagent` with `codex-handoff` or `claude-handoff` (passing `Role: "<model> <effort> review"` after checking `handoff_config({ action: "get" })` if omitted) when the user wants a visible `/agents` (`Alt+J`) pane streaming live progress, or call the MCP tool `handoff_review` directly for a fast single call.

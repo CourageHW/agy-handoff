@@ -2,26 +2,29 @@
 
 All notable changes to `agy-handoff` are documented in this file.
 
-## [0.1.1] - Unreleased
-
-### Fixed
-- **Windows process cleanup**: Always pass `/F` to `taskkill` in `terminateProcessTree` on Windows so console processes (such as `node.exe`) terminate cleanly on timeout and cancellation without hanging.
-- **Windows rename reliability**: Added `renameSyncSafe` retry helper for atomic config and job metadata writes on Windows `EPERM`/`EBUSY`/`EACCES`.
-- **Windows CI (`ENAMETOOLONG`)**: Replaced a 64 KB command-line argument in `test/jobs.test.mjs` with an expression generating the payload inside Node, and added retry options to temporary directory cleanup.
-- **Job timeout & cancellation guards**: Added a hard-settle failsafe on timed-out background jobs and guarded background `SIGTERM`->`SIGKILL` escalation timers against PID reuse.
-
-### Security & Compatibility
-- **Minimum CLI verification**: `handoff_doctor` now checks CLI versions (`Codex >= 0.160.0`, `Claude Code >= 2.1.259`) and verifies required CLI flags (`--restricted`, `--permission-prompts`, `--json`, `--ephemeral`, etc.) with explicit upgrade messages on mismatch.
-- **Claude Code `workspace-write` hardening**: Added `--restricted`, `--strict-mcp-config`, `--tools`, and `--disallowedTools "Bash(sudo *),Bash(git push),Bash(git push *)"` alongside `--permission-mode acceptEdits` so built-in file tools stay confined to `cwd`.
+## [0.2.0] - 2026-11-21
 
 ### Added
-- **Read-only job statistics**: Added `node src/cli.mjs stats` (`agy-handoff stats` / `jobs stats`) and `handoff_job_status({ includeStats: true })` reporting job counts, engine shares, status rates, average elapsed time, and CLI-reported token/cost totals without estimation.
-- **Cross-review summary metadata**: `handoff_cross_review` now returns factual execution counts and total duration in `summary`, paired with structured 4-part synthesis guidance (`Consensus Findings`, `Unique Findings`, `Conflicts / Trade-offs`, `Verified Findings`).
-- **Integration & live E2E suites**: Added `test/e2e-mcp.test.mjs` for CI-safe MCP end-to-end tests and `scripts/e2e-live.mjs` (`npm run test:live`) for live local Codex/Claude verification.
+- **Context-Aware Handoff (`src/context.mjs`)**: Optional `context: { files, summary, constraints, acceptanceCriteria }` on `handoff_review`, `handoff_delegate`, and `handoff_cross_review` (plus `--files` / `--context-summary` CLI flags). Resolves and annotates target paths on disk and injects a focused `## Handoff Context` header to reduce redundant full-repo exploration.
+- **Execution Evidence & Git Delta Verification (`src/context.mjs`, `src/jobs.mjs`)**: Tracks factual runtime observations (`observedToolCalls`, `toolsUsed`, `commandsExecuted`, `filesInspected`, `filesModified`, and `workspaceGitDelta` for `workspace-write`), emitting explicit warnings if zero tool calls occur in a review or zero edits occur in `workspace-write`.
+- **Structured Cross-Review & Citation Checks (`src/cross-review.mjs`)**: Optional `structured: true` on `handoff_review` / `handoff_cross_review` uses `codex exec --output-schema` and `claude --json-schema` to collect typed findings, match Consensus / Severity Conflicts / Unique findings, and mechanically check file existence, workspace path bounds, and line numbers (`semanticallyVerified` remains `false` until inspected by the parent agent).
+- **Safe Read-Only Job Recovery & Retry (`handoff_job_retry`)**: Added `recoverStaleJobs()` (surfaced in `handoff_doctor`) and `handoff_job_retry` / `jobs retry <jobId> [--fallback]` to replay finished `read-only` jobs on the same or alternate engine while strictly refusing `workspace-write` retries.
+- **Opt-In Policy Routing (`engine: "auto"`) (`src/routing.mjs`)**: Transparently routes `engine: "auto"` using CLI compatibility (`handoff_doctor`), configured per-task-type preferences (`config.routing`), consecutive-failure avoidance, and least-used recent quota balancing, returning `routingDecision` with the exact reason.
+- **Visual Stats Dashboard (`stats --table`)**: Added `formatStatsTable()` in `src/watch.mjs` and `--table` on `node src/cli.mjs stats` / `jobs stats`.
+- **Subagent Context Isolation & Demo Recipe**: Tightened `codex-handoff` and `claude-handoff` instructions for scoped subagent execution and added `assets/demo.tape`.
+
+## [0.1.1] - 2026-11-20
+
+### Fixed
+- **Windows process cleanup**: Always pass `/F` to `taskkill` in `terminateProcessTree` on Windows so console processes (`node.exe`, etc.) terminate cleanly on timeout and cancel.
+- **Windows rename reliability & CI (`ENAMETOOLONG`)**: Added `renameSyncSafe` retry helper, replaced 64 KB `node -e` CLI literal in `test/jobs.test.mjs`, added `rmSync` retry options, and added case-insensitive Windows entry-path check in `isDirectExecution`.
+- **Job timeout & cancellation guards**: Added `hardSettleTimer` failsafe on timed-out background jobs and guarded `SIGKILL` escalation against PID reuse.
+
+### Security & Compatibility
+- **Minimum CLI verification**: `handoff_doctor` enforces `Codex >= 0.160.0` and `Claude Code >= 2.1.259` and checks required CLI flags.
+- **Claude Code `workspace-write` hardening**: Added `--restricted`, `--strict-mcp-config`, `--tools`, and `--disallowedTools "Bash(sudo *),Bash(git push),Bash(git push *)"`.
 
 ## [0.1.0] - 2026-11-20
 
 ### Added
-- Initial release of `agy-handoff` for Google Antigravity (`agy` CLI, Antigravity IDE, and Antigravity 2.0).
-- Zero-dependency stdio MCP server exposing `handoff_doctor`, `handoff_review`, `handoff_delegate`, `handoff_cross_review`, `handoff_config`, `handoff_job_status`, `handoff_job_result`, and `handoff_job_cancel`.
-- Five companion skills (`handoff-doctor`, `handoff-review`, `handoff-delegate`, `handoff-cross-review`, `handoff-models`), safety rules (`rules/AGENTS.md`), and two dedicated subagents (`codex-handoff`, `claude-handoff`) with live progress streaming and `agy-handoff watch`.
+- Initial release of `agy-handoff` with zero-dependency stdio MCP server, 8 tools, 5 skills, `rules/AGENTS.md`, `codex-handoff` / `claude-handoff` subagents, and `watch` live monitor.

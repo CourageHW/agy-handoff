@@ -32,7 +32,7 @@ test("parseCodexJsonLine parses session, command execution, message, and error e
         item: { type: "command_execution", command: "git diff --stat" },
       }),
     ),
-    [{ kind: "tool_start", tool: "Bash", summary: "Run: git diff --stat" }],
+    [{ kind: "tool_start", tool: "Bash", target: "git diff --stat", summary: "Run: git diff --stat" }],
   );
 
   assert.deepEqual(
@@ -88,7 +88,7 @@ test("parseClaudeStreamJsonLine parses init, tool_use, text, and result events c
       }),
     ),
     [
-      { kind: "tool_start", tool: "Read", summary: "Read: src/jobs.mjs" },
+      { kind: "tool_start", tool: "Read", target: "src/jobs.mjs", summary: "Read: src/jobs.mjs" },
       { kind: "message", summary: "Note: Checking job flush order." },
     ],
   );

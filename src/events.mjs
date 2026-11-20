@@ -86,6 +86,7 @@ export function parseCodexJsonLine(line) {
               ? {
                   kind: "tool_start",
                   tool: "Bash",
+                  target: typeof item.command === "string" ? item.command : null,
                   summary: `Run: ${compactText(item.command ?? "")}`,
                 }
               : {
@@ -108,12 +109,27 @@ export function parseCodexJsonLine(line) {
           return [];
 
         case "file_change": {
-          const target =
-            item.path || item.file_path || item.changes?.[0]?.path || "changed";
+          if (isStart) return [];
+          const changes = Array.isArray(item.changes)
+            ? item.changes
+                .map((c) => c?.path || c?.file_path)
+                .filter((p) => typeof p === "string" && p.trim())
+            : [];
+          const primaryTarget =
+            item.path || item.file_path || changes[0] || "changed";
+          const allTargets =
+            changes.length > 0
+              ? changes
+              : typeof primaryTarget === "string" && primaryTarget !== "changed"
+                ? [primaryTarget]
+                : [];
           return [
             {
               kind: "file",
-              summary: `File: ${compactText(target)}`,
+              target: typeof primaryTarget === "string" ? primaryTarget : null,
+              ...(allTargets.length > 0 ? { targets: allTargets } : {}),
+              ...(item.status ? { status: item.status } : {}),
+              summary: `File: ${compactText(primaryTarget)}`,
             },
           ];
         }
@@ -213,9 +229,16 @@ export function parseClaudeStreamJsonLine(line) {
       if (block.type === "tool_use") {
         const toolName = compactText(block.name || "Tool", 40) || "Tool";
         const detail = extractClaudeToolDetail(block.input);
+        const isPatternOnly =
+          (toolName === "Grep" || toolName === "Glob") &&
+          !block.input?.file_path &&
+          !block.input?.path;
         events.push({
           kind: "tool_start",
           tool: toolName,
+          target: detail ? detail : null,
+          ...(typeof block.id === "string" && block.id ? { toolUseId: block.id } : {}),
+          ...(isPatternOnly ? { patternOnly: true } : {}),
           summary: detail ? `${toolName}: ${compactText(detail)}` : toolName,
         });
       } else if (
@@ -241,7 +264,12 @@ export function parseClaudeStreamJsonLine(line) {
     const blocks = Array.isArray(ev.message?.content) ? ev.message.content : [];
     const events = [];
     for (const block of blocks) {
-      if (block?.type === "tool_result" && block.is_error === true) {
+      if (block?.type !== "tool_result") continue;
+      const toolUseId =
+        typeof block.tool_use_id === "string" && block.tool_use_id
+          ? block.tool_use_id
+          : null;
+      if (block.is_error === true) {
         const text =
           typeof block.content === "string"
             ? block.content
@@ -250,7 +278,15 @@ export function parseClaudeStreamJsonLine(line) {
               : "";
         events.push({
           kind: "error",
+          ...(toolUseId ? { toolUseId } : {}),
           summary: `Tool error: ${compactText(text)}`,
+        });
+      } else if (toolUseId) {
+        events.push({
+          kind: "tool_done",
+          toolUseId,
+          isError: false,
+          summary: "Tool completed",
         });
       }
     }

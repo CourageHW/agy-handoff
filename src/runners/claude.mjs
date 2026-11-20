@@ -191,6 +191,7 @@ export function buildClaudeExecSpec({
   effort,
   sessionId,
   ephemeral = false,
+  jsonSchema,
 }) {
   if (!prompt || !prompt.trim()) {
     throw new Error("Prompt is required for Claude Code execution.");
@@ -257,6 +258,9 @@ export function buildClaudeExecSpec({
   if (ephemeral && !validSessionId) {
     args.push("--no-session-persistence");
   }
+  if (jsonSchema && typeof jsonSchema === "object" && !Array.isArray(jsonSchema)) {
+    args.push("--json-schema", JSON.stringify(jsonSchema));
+  }
 
   return {
     args,
@@ -274,6 +278,7 @@ export function buildClaudeReviewSpec({
   prompt,
   model,
   effort,
+  jsonSchema,
 }) {
   if (!VALID_REVIEW_STYLES.has(style)) {
     throw new Error(`Unsupported style "${style}". Allowed: standard, adversarial.`);
@@ -314,6 +319,7 @@ export function buildClaudeReviewSpec({
     model,
     effort,
     ephemeral: true,
+    jsonSchema,
   });
 }
 
@@ -325,6 +331,7 @@ export function parseClaudeJsonOutput(stdout) {
       sessionId: null,
       costUsd: null,
       usage: null,
+      structuredOutput: null,
       isError: false,
       parseError: false,
     };
@@ -334,12 +341,20 @@ export function parseClaudeJsonOutput(stdout) {
     try {
       const parsed = JSON.parse(trimmed);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const structuredOutput =
+          parsed.structured_output &&
+          typeof parsed.structured_output === "object" &&
+          !Array.isArray(parsed.structured_output)
+            ? parsed.structured_output
+            : null;
         const text =
-          typeof parsed.result === "string"
+          typeof parsed.result === "string" && parsed.result.length > 0
             ? parsed.result
-            : typeof parsed.content === "string"
+            : typeof parsed.content === "string" && parsed.content.length > 0
               ? parsed.content
-              : trimmed;
+              : structuredOutput
+                ? JSON.stringify(structuredOutput)
+                : trimmed;
         return {
           text,
           sessionId: parsed.session_id || parsed.sessionId || null,
@@ -351,6 +366,7 @@ export function parseClaudeJsonOutput(stdout) {
                 : null,
           usage:
             parsed.usage && typeof parsed.usage === "object" ? parsed.usage : null,
+          structuredOutput,
           isError: Boolean(parsed.is_error),
           parseError: false,
         };
@@ -361,6 +377,7 @@ export function parseClaudeJsonOutput(stdout) {
         sessionId: null,
         costUsd: null,
         usage: null,
+        structuredOutput: null,
         isError: false,
         parseError: trimmed.startsWith("{") || trimmed.startsWith("["),
       };
@@ -376,6 +393,7 @@ export function parseClaudeJsonOutput(stdout) {
   let sessionId = null;
   let costUsd = null;
   let usage = null;
+  let structuredOutput = null;
   let isError = false;
   let resultText = null;
   let lastAssistantText = null;
@@ -409,6 +427,13 @@ export function parseClaudeJsonOutput(stdout) {
     if (ev.usage && typeof ev.usage === "object") {
       usage = ev.usage;
     }
+    if (
+      ev.structured_output &&
+      typeof ev.structured_output === "object" &&
+      !Array.isArray(ev.structured_output)
+    ) {
+      structuredOutput = ev.structured_output;
+    }
 
     if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
       const texts = ev.message.content
@@ -435,6 +460,7 @@ export function parseClaudeJsonOutput(stdout) {
       sessionId: null,
       costUsd: null,
       usage: null,
+      structuredOutput: null,
       isError: false,
       parseError: trimmed.startsWith("{") || trimmed.startsWith("["),
     };
@@ -446,16 +472,25 @@ export function parseClaudeJsonOutput(stdout) {
       sessionId,
       costUsd,
       usage,
+      structuredOutput,
       isError,
       parseError: true,
     };
   }
 
+  const finalText =
+    typeof resultText === "string" && resultText.length > 0
+      ? resultText
+      : structuredOutput
+        ? JSON.stringify(structuredOutput)
+        : lastAssistantText ?? trimmed;
+
   return {
-    text: resultText ?? lastAssistantText ?? trimmed,
+    text: finalText,
     sessionId,
     costUsd,
     usage,
+    structuredOutput,
     isError,
     parseError: false,
   };
@@ -518,6 +553,7 @@ async function executeClaude(spec, options) {
     sessionId: parsed.sessionId,
     costUsd: parsed.costUsd,
     usage: parsed.usage || null,
+    structuredOutput: parsed.structuredOutput || null,
     output: truncateOutput(rawOutput),
     stderr: ok ? "" : res.stderr,
   };

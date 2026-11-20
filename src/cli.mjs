@@ -2,24 +2,31 @@
 import { handleToolCall } from "./mcp-server.mjs";
 import { JobManager } from "./jobs.mjs";
 import { validateTimeoutSec } from "./runners/common.mjs";
-import { runWatch } from "./watch.mjs";
+import { formatStatsTable, runWatch } from "./watch.mjs";
 
 const BOOLEAN_FLAGS = new Set([
   "background",
   "skip-git-repo-check",
   "once",
   "stream",
+  "structured",
+  "table",
+  "fallback",
 ]);
 
 const COMMAND_ALLOWED_FLAGS = {
   doctor: new Set(),
   review: new Set([
     "engine",
+    "task-type",
     "style",
     "scope",
     "base",
     "commit",
     "prompt",
+    "files",
+    "context-summary",
+    "structured",
     "model",
     "effort",
     "cwd",
@@ -29,7 +36,10 @@ const COMMAND_ALLOWED_FLAGS = {
   ]),
   delegate: new Set([
     "engine",
+    "task-type",
     "prompt",
+    "files",
+    "context-summary",
     "mode",
     "model",
     "effort",
@@ -45,6 +55,9 @@ const COMMAND_ALLOWED_FLAGS = {
     "base",
     "commit",
     "prompt",
+    "files",
+    "context-summary",
+    "structured",
     "codex-model",
     "codex-effort",
     "claude-model",
@@ -73,32 +86,56 @@ const COMMAND_ALLOWED_FLAGS = {
     "claude-model",
     "claude-effort",
   ]),
-  jobs: new Set(["limit"]),
-  stats: new Set(["limit"]),
+  jobs: new Set(["limit", "table", "fallback", "timeout"]),
+  stats: new Set(["limit", "table"]),
   watch: new Set(["once", "stream", "interval", "limit"]),
 };
+
+function parseCliContext(flags) {
+  const hasFiles = typeof flags.files === "string" && flags.files.trim();
+  const hasSummary =
+    typeof flags["context-summary"] === "string" && flags["context-summary"].trim();
+  if (!hasFiles && !hasSummary) {
+    return undefined;
+  }
+  return {
+    ...(hasFiles
+      ? {
+          files: flags.files
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean),
+        }
+      : {}),
+    ...(hasSummary ? { summary: flags["context-summary"].trim() } : {}),
+  };
+}
 
 function printHelp() {
   console.log(`agy-handoff CLI
 
 Usage:
   agy-handoff doctor
-  agy-handoff review --engine <codex|claude> [options]
-  agy-handoff delegate --engine <codex|claude> --prompt "<task>" [options]
+  agy-handoff review --engine <codex|claude|auto> [options]
+  agy-handoff delegate --engine <codex|claude|auto> --prompt "<task>" [options]
   agy-handoff cross-review [options]
   agy-handoff models [show | set [scope] [engine] [model] [effort] | reset [scope]]
-  agy-handoff jobs [status <jobId> | result <jobId> | cancel <jobId> | stats [--limit <n>]]
-  agy-handoff stats [--limit <n>]
+  agy-handoff jobs [status <jobId> | result <jobId> | cancel <jobId> | retry <jobId> [--fallback] | stats [--limit <n>] [--table]]
+  agy-handoff stats [--limit <n>] [--table]
   agy-handoff watch [jobId] [--once] [--stream] [--interval <ms>]
 
 Common options:
-  --engine <codex|claude>
+  --engine <codex|claude|auto>
+  --task-type <review|debugging|implementation|architecture|general>
   --style <standard|adversarial>
   --scope <uncommitted|base|commit|custom | default|review|delegate|cross-review|all>
   --base <branch>
   --commit <sha>
   --mode <read-only|workspace-write>
   --prompt <text>
+  --files <path1,path2,...>
+  --context-summary <text>
+  --structured
   --model <model>
   --effort <low|medium|high|xhigh|max|ultra>
   --codex-model <model>
@@ -233,11 +270,14 @@ async function main() {
     case "review":
       result = await handleToolCall("handoff_review", {
         engine: flags.engine || "codex",
+        taskType: flags["task-type"],
         style: flags.style || "standard",
         scope: flags.scope || "uncommitted",
         base: flags.base,
         commit: flags.commit,
         prompt: flags.prompt || positional.join(" ") || undefined,
+        context: parseCliContext(flags),
+        structured: flags.structured ? true : undefined,
         model: flags.model,
         effort: flags.effort,
         cwd: flags.cwd,
@@ -256,7 +296,9 @@ async function main() {
       }
       result = await handleToolCall("handoff_delegate", {
         engine: delegateEngine,
+        taskType: flags["task-type"],
         prompt: flags.prompt || positional.join(" "),
+        context: parseCliContext(flags),
         mode: delegateMode,
         model: flags.model,
         effort: flags.effort,
@@ -275,6 +317,8 @@ async function main() {
         base: flags.base,
         commit: flags.commit,
         prompt: flags.prompt || positional.join(" ") || undefined,
+        context: parseCliContext(flags),
+        structured: flags.structured ? true : undefined,
         codexModel: flags["codex-model"],
         codexEffort: flags["codex-effort"],
         claudeModel: flags["claude-model"],
@@ -343,6 +387,35 @@ async function main() {
         result = new JobManager().getStats({
           limit: parseIntFlag("limit", flags.limit, 1, 500) ?? 100,
         });
+        if (flags.table) {
+          process.stdout.write(formatStatsTable(result));
+          return;
+        }
+      } else if (sub === "retry") {
+        const jm = new JobManager();
+        const started = await handleToolCall(
+          "handoff_job_retry",
+          {
+            jobId,
+            fallbackEngine: flags.fallback ? true : undefined,
+            timeoutSec,
+          },
+          jm,
+        );
+        let snap = jm.getStatus(started.jobId, { eventsLimit: 0 });
+        while (snap.status === "running") {
+          snap = await jm.waitForStatus(started.jobId, {
+            waitSec: 5,
+            sinceSeq: snap.eventCount || 0,
+            eventsLimit: 0,
+          });
+        }
+        result = jm.getResult(started.jobId);
+        console.log(JSON.stringify(result, null, 2));
+        if (result.status !== "completed") {
+          process.exit(1);
+        }
+        return;
       } else if (sub === "status") {
         result = await handleToolCall("handoff_job_status", { jobId });
       } else if (sub === "result") {
@@ -362,6 +435,10 @@ async function main() {
       result = new JobManager().getStats({
         limit: parseIntFlag("limit", flags.limit, 1, 500) ?? 100,
       });
+      if (flags.table) {
+        process.stdout.write(formatStatsTable(result));
+        return;
+      }
       break;
     }
   }

@@ -212,9 +212,32 @@ test("updateConfig reset clears single command, single engine, or all settings",
     updateConfig({ action: "reset", scope: "review" }, file);
     assert.equal(resolveEngineConfig("review", "claude", {}, file).modelSource, "default");
 
+    // Routing config update
+    const afterRouting = updateConfig(
+      {
+        action: "set",
+        routing: { policy: "prefer-claude", taskTypes: { debugging: "claude" } },
+      },
+      file,
+    );
+    assert.deepEqual(afterRouting.config.routing, {
+      policy: "prefer-claude",
+      taskTypes: { debugging: "claude" },
+      allowUnsandboxedWriteAuto: false,
+    });
+
     // Reset all
     const afterAll = updateConfig({ action: "reset", scope: "all" }, file);
-    assert.deepEqual(afterAll.config, { version: 1, defaults: {}, commands: {} });
+    assert.deepEqual(afterAll.config, {
+      version: 1,
+      defaults: {},
+      commands: {},
+      routing: {
+        policy: "balanced",
+        taskTypes: {},
+        allowUnsandboxedWriteAuto: false,
+      },
+    });
     assert.equal(afterAll.effective.review.codex.modelSource, "builtin");
     assert.equal(afterAll.effective.review.codex.model, "gpt-6.2-sol");
     assert.equal(afterAll.effective.review.claude.model, "claude-opus-5-5");

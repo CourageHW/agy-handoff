@@ -21,22 +21,24 @@ Delegate focused tasks to local `codex` or `claude` CLIs safely and manage async
 
 ## Procedure
 
-1. **Scope the handoff prompt**:
-   - State the concrete objective, relevant paths/symbols, reproduction command (if debugging), and acceptance criteria.
-   - Avoid pasting huge file contents; pass `cwd` so the external CLI reads the workspace directly.
+1. **Scope the handoff prompt & context**:
+   - State the concrete objective, reproduction command (if debugging), and acceptance criteria.
+   - Pass `cwd` plus structured `context: { files, summary, constraints, acceptanceCriteria }` when relevant paths or prior findings are already known, avoiding redundant codebase re-exploration.
+   - Pass `engine: "auto"` (with optional `taskType: "debugging" | "implementation" | "architecture" | "general"`) only when policy-based automatic routing is desired.
 
 2. **Execute via MCP or dedicated subagent pane**:
-   - Use `invoke_subagent` with `codex-handoff` or `claude-handoff` (passing `Role: "<model> <effort> delegate"` after checking `handoff_config({ action: "get" })` if omitted) when you want a dedicated `/agents` (`Alt+J`) pane streaming live progress, OR call `handoff_delegate` with `{ engine, prompt, mode, cwd, model, effort, sessionId, background, timeoutSec }`.
-   - Omitted `model` / `effort` values automatically use the configured `delegate` or global default (built-in: Codex `gpt-6.2-sol` `high`, Claude `claude-opus-5-5` `high`; configure via `/agy-handoff:handoff-models` or `handoff_config`).
+   - Use `invoke_subagent` with `codex-handoff` or `claude-handoff` (passing `Role: "<model> <effort> delegate"` after checking `handoff_config({ action: "get" })` if omitted) when you want a dedicated `/agents` (`Alt+J`) pane streaming live progress, OR call `handoff_delegate` with `{ engine, taskType, prompt, context, mode, cwd, model, effort, sessionId, background, timeoutSec }`.
    - To continue a previous Claude Code or Codex session, pass its returned `sessionId` (or `"last"` for Codex).
    - CLI fallback (if MCP is unavailable):
-     `node <plugin-root>/src/cli.mjs delegate --engine <codex|claude> --mode <read-only|workspace-write> --cwd <cwd> --prompt "<task>"`
+     `node <plugin-root>/src/cli.mjs delegate --engine <codex|claude|auto> --mode <read-only|workspace-write> --cwd <cwd> --files "<a,b>" --prompt "<task>"`
 
-3. **Manage & observe background jobs**:
-   - Inspect live status & `recentEvents`: `handoff_job_status` (supports `waitSec` and `sinceSeq`)
-   - Live terminal monitor: `node <plugin-root>/src/cli.mjs watch [jobId]`
-   - Fetch completed output: `handoff_job_result`
+3. **Manage, observe & safely recover jobs**:
+   - Inspect live status & `recentEvents`: `handoff_job_status` (supports `waitSec` and `sinceSeq`, or `includeStats: true` when `jobId` is omitted)
+   - Live terminal monitor / stats: `node <plugin-root>/src/cli.mjs watch [jobId]` or `node <plugin-root>/src/cli.mjs stats --table`
+   - Fetch completed output & evidence: `handoff_job_result`
+   - Safely replay a failed/timed-out `read-only` job (never `workspace-write`): `handoff_job_retry({ jobId, fallbackEngine })`
    - Cancel a stuck or unwanted run: `handoff_job_cancel`
 
-4. **Post-handoff check**:
-   - If `mode: "workspace-write"` was used, inspect `git status` and `git diff` and run relevant tests before concluding.
+4. **Post-handoff verification**:
+   - Inspect `executionEvidence` (observed tool calls, commands, files modified, and warnings).
+   - If `mode: "workspace-write"` was used, never rely solely on CLI prose: verify `workspaceGitDelta` / `git status` / `git diff` and run tests before concluding.

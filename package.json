@@ -1,6 +1,6 @@
 {
   "name": "agy-handoff",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Antigravity plugin to hand off code reviews, debugging, and second-opinion checks to local OpenAI Codex and Anthropic Claude Code CLIs.",
   "type": "module",
   "license": "MIT",

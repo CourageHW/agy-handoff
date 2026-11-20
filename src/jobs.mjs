@@ -13,11 +13,18 @@ import {
 import { parseClaudeJsonOutput } from "./runners/claude.mjs";
 import { extractCodexSessionId } from "./runners/codex.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "./events.mjs";
+import { parseStructuredReviewPayload } from "./cross-review.mjs";
+import {
+  captureGitDirtySnapshot,
+  computeGitDelta,
+  createExecutionEvidenceTracker,
+} from "./context.mjs";
 
 export const MAX_JOB_LOG_BYTES = 4 * 1024 * 1024; // 4 MB per stream
 export const MAX_JOB_EVENTS_BYTES = 512 * 1024; // 512 KB per event log
 const MAX_RETAINED_JOBS = 100;
 const META_SYNC_THROTTLE_MS = 500;
+const MAX_REPLAY_STDIN_BYTES = 64 * 1024; // 64 KB cap for safe read-only retry specs
 
 function defaultJobsDir() {
   if (process.env.AGY_HANDOFF_JOBS_DIR) {
@@ -146,12 +153,46 @@ function extractReportedTokens(usage) {
   };
 }
 
+function sanitizePersistedRequestParams(requestParams, fallbackPrompt = null) {
+  if (!requestParams || typeof requestParams !== "object") {
+    return null;
+  }
+  if (requestParams.sessionId === "last") {
+    return null;
+  }
+  const promptText =
+    typeof requestParams.prompt === "string"
+      ? requestParams.prompt
+      : typeof fallbackPrompt === "string"
+        ? fallbackPrompt
+        : undefined;
+  if (
+    typeof promptText === "string" &&
+    Buffer.byteLength(promptText, "utf8") > MAX_REPLAY_STDIN_BYTES
+  ) {
+    return null;
+  }
+  return {
+    style: requestParams.style,
+    scope: requestParams.scope,
+    base: requestParams.base,
+    commit: requestParams.commit,
+    prompt: promptText,
+    structured: Boolean(requestParams.structured),
+    sessionId: requestParams.sessionId,
+    skipGitRepoCheck: requestParams.skipGitRepoCheck,
+    timeoutSec: requestParams.timeoutSec,
+  };
+}
+
 export class JobManager {
   constructor(jobsDir) {
     this.jobsDir = getJobsDir(jobsDir);
     this.activeChildren = new Map();
     this.liveState = new Map();
     this.cancelTimers = new Map();
+    this.inMemoryReplay = new Map();
+    this.retryingJobs = new Set();
   }
 
   validateJobId(jobId) {
@@ -184,6 +225,10 @@ export class JobManager {
 
   eventsPath(jobId) {
     return path.join(this.jobsDir, `${this.validateJobId(jobId)}.events.log`);
+  }
+
+  schemaPath(jobId) {
+    return path.join(this.jobsDir, `${this.validateJobId(jobId)}.schema.json`);
   }
 
   writeMeta(meta) {
@@ -220,7 +265,8 @@ export class JobManager {
       const sameOwner = meta.ownerPid && meta.ownerPid === process.pid;
       const stale = sameOwner
         ? !isProcessAlive(meta.pid)
-        : !meta.ownerPid || !isProcessAlive(meta.ownerPid);
+        : (!meta.ownerPid || !isProcessAlive(meta.ownerPid)) &&
+          (!meta.pid || !isProcessAlive(meta.pid));
       if (stale) {
         meta.status = "failed";
         meta.finishedAt = meta.finishedAt || new Date().toISOString();
@@ -296,6 +342,7 @@ export class JobManager {
           this.stderrPath(entry.jobId),
           this.outputFilePath(entry.jobId),
           this.eventsPath(entry.jobId),
+          this.schemaPath(entry.jobId),
         ]) {
           try {
             fs.rmSync(p, { force: true });
@@ -309,7 +356,18 @@ export class JobManager {
     }
   }
 
-  beginForegroundRun({ engine, action, cwd, model = null, effort = null }) {
+  beginForegroundRun({
+    engine,
+    action,
+    cwd,
+    model = null,
+    effort = null,
+    mode = null,
+    handoffContext = null,
+    retryOf = null,
+    structured = false,
+    requestParams = null,
+  }) {
     const id = this.allocateJobId(engine);
     const eventsPath = this.eventsPath(id);
     this.pruneOldJobs();
@@ -317,11 +375,21 @@ export class JobManager {
     const eventsStream = fs.createWriteStream(eventsPath, { mode: 0o600 });
     eventsStream.on("error", () => {});
 
+    const safeRequestParams =
+      mode === "read-only" ? sanitizePersistedRequestParams(requestParams) : null;
+
     const startedAt = new Date().toISOString();
     const meta = {
       id,
       engine,
       action,
+      mode,
+      retryable: mode === "read-only" && Boolean(safeRequestParams),
+      retryOf: retryOf || null,
+      structured: Boolean(structured),
+      handoffContext: handoffContext || null,
+      replaySpec: safeRequestParams ? { requestParams: safeRequestParams } : null,
+      executionEvidence: null,
       cwd,
       foreground: true,
       model,
@@ -421,6 +489,7 @@ export class JobManager {
       sessionId = null,
       costUsd = null,
       usage = null,
+      executionEvidence = null,
     } = {}) => {
       if (finished) return;
       finished = true;
@@ -440,6 +509,7 @@ export class JobManager {
           meta.costUsd =
             typeof costUsd === "number" ? costUsd : state.costUsd ?? meta.costUsd;
           meta.usage = usage || state.usage || meta.usage || null;
+          meta.executionEvidence = executionEvidence || meta.executionEvidence || null;
           meta.currentActivity = state.currentActivity;
           meta.eventCount = state.eventCount;
           this.writeMeta(meta);
@@ -464,6 +534,7 @@ export class JobManager {
     jobId,
     engine,
     action,
+    mode = null,
     command,
     args,
     cwd,
@@ -473,6 +544,12 @@ export class JobManager {
     parseMode = "text",
     model = null,
     effort = null,
+    handoffContext = null,
+    retryOf = null,
+    structured = false,
+    outputSchema = null,
+    beforeGit = null,
+    requestParams = null,
     onEvent = null,
   }) {
     const id = jobId ? this.validateJobId(jobId) : this.allocateJobId(engine);
@@ -480,23 +557,93 @@ export class JobManager {
     const stderrPath = this.stderrPath(id);
     const eventsPath = this.eventsPath(id);
     const outputFile = hasOutputFile ? this.outputFilePath(id) : null;
+    const schemaFile = outputSchema ? this.schemaPath(id) : null;
 
     this.pruneOldJobs();
 
-    const stdoutStream = fs.createWriteStream(stdoutPath, { mode: 0o600 });
-    const stderrStream = fs.createWriteStream(stderrPath, { mode: 0o600 });
-    const eventsStream = fs.createWriteStream(eventsPath, { mode: 0o600 });
-    stdoutStream.on("error", () => {});
-    stderrStream.on("error", () => {});
-    eventsStream.on("error", () => {});
+    let stdoutStream = null;
+    let stderrStream = null;
+    let eventsStream = null;
+    let child = null;
 
-    const spawnSpec = resolveSpawnSpec(command, args);
-    const child = spawn(spawnSpec.command, spawnSpec.args, {
-      cwd,
-      stdio: ["pipe", "pipe", "pipe"],
-      shell: false,
-      detached: process.platform !== "win32",
-      windowsVerbatimArguments: Boolean(spawnSpec.windowsVerbatimArguments),
+    try {
+      if (schemaFile) {
+        fs.writeFileSync(schemaFile, JSON.stringify(outputSchema, null, 2), {
+          encoding: "utf8",
+          mode: 0o600,
+        });
+      }
+      const spawnSpec = resolveSpawnSpec(command, args);
+      stdoutStream = fs.createWriteStream(stdoutPath, { mode: 0o600 });
+      stderrStream = fs.createWriteStream(stderrPath, { mode: 0o600 });
+      eventsStream = fs.createWriteStream(eventsPath, { mode: 0o600 });
+      stdoutStream.on("error", () => {});
+      stderrStream.on("error", () => {});
+      eventsStream.on("error", () => {});
+
+      child = spawn(spawnSpec.command, spawnSpec.args, {
+        cwd,
+        stdio: ["pipe", "pipe", "pipe"],
+        shell: false,
+        detached: process.platform !== "win32",
+        windowsVerbatimArguments: Boolean(spawnSpec.windowsVerbatimArguments),
+      });
+    } catch (err) {
+      stdoutStream?.destroy();
+      stderrStream?.destroy();
+      eventsStream?.destroy();
+      if (schemaFile) {
+        try {
+          fs.rmSync(schemaFile, { force: true });
+        } catch {
+          // ignore
+        }
+      }
+      throw err;
+    }
+
+    const isReadOnly = mode === "read-only";
+    const stdinTooLarge =
+      typeof stdin === "string" &&
+      Buffer.byteLength(stdin, "utf8") > MAX_REPLAY_STDIN_BYTES;
+    const usesLastSession = requestParams?.sessionId === "last";
+    const safeRequestParams = isReadOnly
+      ? sanitizePersistedRequestParams(requestParams, stdin)
+      : null;
+    const canReplayInMemory =
+      isReadOnly &&
+      !stdinTooLarge &&
+      !usesLastSession &&
+      typeof command === "string" &&
+      Array.isArray(args);
+
+    if (canReplayInMemory) {
+      this.inMemoryReplay.set(id, {
+        engine,
+        action,
+        mode: "read-only",
+        cwd,
+        model,
+        effort,
+        parseMode,
+        hasOutputFile: Boolean(outputFile),
+        timeoutMs,
+        structured: Boolean(structured),
+        outputSchema: outputSchema || null,
+        command,
+        args: [...args],
+        stdin: stdin ?? undefined,
+        requestParams: safeRequestParams,
+      });
+    }
+
+    const jsonStreamEnabled =
+      parseMode === "claude-json" ||
+      (engine === "codex" && Array.isArray(args) && args.includes("--json"));
+    const evidenceTracker = createExecutionEvidenceTracker({
+      action,
+      mode: mode || "unknown",
+      jsonStream: jsonStreamEnabled,
     });
 
     const startedAt = new Date().toISOString();
@@ -504,6 +651,13 @@ export class JobManager {
       id,
       engine,
       action,
+      mode,
+      retryable: Boolean(safeRequestParams || canReplayInMemory),
+      retryOf: retryOf || null,
+      structured: Boolean(structured),
+      handoffContext: handoffContext || null,
+      replaySpec: safeRequestParams ? { requestParams: safeRequestParams } : null,
+      executionEvidence: null,
       cwd,
       model,
       effort,
@@ -555,6 +709,7 @@ export class JobManager {
       engine === "codex" || engine === "claude"
         ? createEventStreamParser(engine, (ev) => {
             if (finalized) return;
+            evidenceTracker.recordEvent(ev);
             state.currentActivity = ev.summary || state.currentActivity;
             state.eventCount = ev.seq || state.eventCount + 1;
             if (ev.sessionId) {
@@ -732,6 +887,17 @@ export class JobManager {
           }
         }
 
+        const afterGit =
+          mode === "workspace-write" && beforeGit
+            ? await captureGitDirtySnapshot(cwd)
+            : null;
+        const gitDelta =
+          beforeGit && afterGit ? computeGitDelta(beforeGit, afterGit) : null;
+        const executionEvidence = evidenceTracker.finalize({
+          ok: finalStatus === "completed",
+          gitDelta,
+        });
+
         const latest = this.readMeta(id) || meta;
         if (latest.status === "canceled") {
           latest.finishedAt = latest.finishedAt || new Date().toISOString();
@@ -741,6 +907,7 @@ export class JobManager {
           latest.sessionId = parsedSessionId || latest.sessionId;
           latest.costUsd = finalCostUsd ?? latest.costUsd ?? null;
           latest.usage = finalUsage || latest.usage || null;
+          latest.executionEvidence = executionEvidence;
           this.writeMeta(latest);
           return;
         }
@@ -755,10 +922,18 @@ export class JobManager {
         latest.sessionId = parsedSessionId || latest.sessionId;
         latest.costUsd = finalCostUsd ?? latest.costUsd ?? null;
         latest.usage = finalUsage || latest.usage || null;
+        latest.executionEvidence = executionEvidence;
         this.writeMeta(latest);
       } catch {
         // never let metadata write failure escape event handler
       } finally {
+        if (schemaFile) {
+          try {
+            fs.rmSync(schemaFile, { force: true });
+          } catch {
+            // ignore
+          }
+        }
         this.activeChildren.delete(id);
         this.liveState.delete(id);
         this.notifyWaiters(id, state);
@@ -871,6 +1046,12 @@ export class JobManager {
       jobId: meta.id,
       engine: meta.engine,
       action: meta.action,
+      mode: meta.mode ?? "unknown",
+      retryable: Boolean(meta.retryable),
+      retryOf: meta.retryOf || null,
+      structured: Boolean(meta.structured),
+      handoffContext: meta.handoffContext || null,
+      executionEvidence: meta.executionEvidence || null,
       status: meta.status,
       foreground: Boolean(meta.foreground),
       model: meta.model || null,
@@ -987,6 +1168,7 @@ export class JobManager {
     let sessionId = meta.sessionId || null;
     let costUsd = typeof meta.costUsd === "number" ? meta.costUsd : null;
     let usage = meta.usage || null;
+    let structuredOutput = null;
 
     if (meta.hasOutputFile) {
       const outPath = this.outputFilePath(meta.id);
@@ -1004,6 +1186,7 @@ export class JobManager {
         output = `Claude Code JSON output was truncated or malformed.\n\n${parsed.text || rawStderr}`;
       } else {
         output = parsed.text || rawStderr;
+        structuredOutput = parsed.structuredOutput || null;
       }
       sessionId = parsed.sessionId || sessionId;
       costUsd = typeof parsed.costUsd === "number" ? parsed.costUsd : costUsd;
@@ -1020,6 +1203,9 @@ export class JobManager {
           jsonl.lastMessage ||
           (meta.status === "completed" ? rawStdout : jsonl.error || rawStderr || rawStdout);
       }
+      if (meta.structured && meta.status === "completed") {
+        structuredOutput = parseStructuredReviewPayload(output).parsed;
+      }
     }
 
     if (!output && rawStderr) {
@@ -1030,6 +1216,13 @@ export class JobManager {
       jobId: meta.id,
       engine: meta.engine,
       action: meta.action,
+      mode: meta.mode ?? "unknown",
+      retryable: Boolean(meta.retryable),
+      retryOf: meta.retryOf || null,
+      structured: Boolean(meta.structured),
+      structuredOutput,
+      handoffContext: meta.handoffContext || null,
+      executionEvidence: meta.executionEvidence || null,
       status: meta.status,
       exitCode: meta.exitCode,
       startedAt: meta.startedAt,
@@ -1043,6 +1236,118 @@ export class JobManager {
       stderr: meta.status === "completed" ? "" : truncateOutput(rawStderr),
       error: meta.error,
     };
+  }
+
+  recoverStaleJobs() {
+    const files = fs
+      .readdirSync(this.jobsDir)
+      .filter((f) => f.endsWith(".json"));
+    const recoveredJobIds = [];
+    for (const file of files) {
+      const jobId = file.slice(0, -5);
+      try {
+        const before = this.readMeta(jobId, { readOnly: true });
+        if (!before || before.status !== "running") continue;
+        const after = this.readMeta(jobId, { readOnly: false });
+        if (after && after.status === "failed") {
+          recoveredJobIds.push(jobId);
+        }
+      } catch {
+        // skip corrupted metadata
+      }
+    }
+    return {
+      recoveredCount: recoveredJobIds.length,
+      recoveredJobIds,
+    };
+  }
+
+  retryJob(jobId, { overrideSpec = null, timeoutMs = null } = {}) {
+    if (this.retryingJobs.has(jobId)) {
+      throw new Error(`Retry already in progress for job: ${jobId}`);
+    }
+    const meta = this.readMeta(jobId);
+    if (!meta) {
+      throw new Error(`Job not found: ${jobId}`);
+    }
+    if (meta.status === "running" || this.activeChildren.has(jobId)) {
+      throw new Error(`Job is still running: ${jobId}`);
+    }
+    if (meta.pid && isProcessAlive(meta.pid)) {
+      throw new Error(
+        `Original process (pid ${meta.pid}) for job "${jobId}" is still alive; refusing concurrent retry.`,
+      );
+    }
+
+    const effectiveMode = meta.mode ?? "unknown";
+    if (effectiveMode !== "read-only") {
+      throw new Error(
+        `Refusing to retry non-read-only job "${jobId}" (mode=${effectiveMode}). Only read-only jobs can be safely replayed.`,
+      );
+    }
+    if (!meta.retryable) {
+      throw new Error(
+        `Job "${jobId}" is not retryable (prompt exceeded 64 KB, used '--last', or lacked replay metadata).`,
+      );
+    }
+
+    // Never execute arbitrary command/args read back from persisted disk JSON.
+    const trustedSpec = overrideSpec || this.inMemoryReplay.get(jobId) || null;
+    if (
+      !trustedSpec ||
+      typeof trustedSpec !== "object" ||
+      trustedSpec.mode !== "read-only" ||
+      typeof trustedSpec.command !== "string"
+    ) {
+      throw new Error(
+        `Refusing to execute unverified disk command for job "${jobId}". Use \`handoff_job_retry\` to rebuild a safe read-only invocation.`,
+      );
+    }
+    if (!fs.existsSync(trustedSpec.cwd)) {
+      throw new Error(`Retry working directory no longer exists: ${trustedSpec.cwd}`);
+    }
+
+    this.retryingJobs.add(jobId);
+    try {
+      const newJobId =
+        trustedSpec.jobId || this.allocateJobId(trustedSpec.engine || meta.engine);
+      const args = Array.isArray(trustedSpec.args) ? [...trustedSpec.args] : [];
+      if (trustedSpec.hasOutputFile && !trustedSpec.jobId) {
+        const outIdx = args.indexOf("-o");
+        if (outIdx !== -1 && outIdx + 1 < args.length) {
+          args[outIdx + 1] = this.outputFilePath(newJobId);
+        }
+      }
+      if (trustedSpec.outputSchema && !trustedSpec.jobId) {
+        const schemaIdx = args.indexOf("--output-schema");
+        if (schemaIdx !== -1 && schemaIdx + 1 < args.length) {
+          args[schemaIdx + 1] = this.schemaPath(newJobId);
+        }
+      }
+
+      return this.startJob({
+        jobId: newJobId,
+        engine: trustedSpec.engine || meta.engine,
+        action: trustedSpec.action || meta.action,
+        mode: "read-only",
+        command: trustedSpec.command,
+        args,
+        cwd: trustedSpec.cwd,
+        stdin: trustedSpec.stdin ?? undefined,
+        timeoutMs: timeoutMs ?? trustedSpec.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        hasOutputFile: Boolean(trustedSpec.hasOutputFile),
+        parseMode: trustedSpec.parseMode || meta.parseMode || "text",
+        model: trustedSpec.model ?? meta.model ?? null,
+        effort: trustedSpec.effort ?? meta.effort ?? null,
+        handoffContext: meta.handoffContext || null,
+        retryOf: meta.id,
+        structured: Boolean(trustedSpec.structured ?? meta.structured),
+        outputSchema: trustedSpec.outputSchema || null,
+        requestParams: trustedSpec.requestParams || meta.replaySpec?.requestParams || null,
+      });
+    } finally {
+      this.retryingJobs.delete(jobId);
+    }
   }
 
   getStats({ limit = 100 } = {}) {
@@ -1217,6 +1522,21 @@ export class JobManager {
         ? Math.round((byStatus.completed / finishedCount) * 1000) / 10
         : null;
 
+    const consecutiveFailures = { codex: 0, claude: 0 };
+    for (const engKey of ["codex", "claude"]) {
+      let streak = 0;
+      for (const m of sampled) {
+        if (m.engine !== engKey) continue;
+        if (m.status === "running") continue;
+        if (m.status === "failed" || m.status === "timed_out") {
+          streak += 1;
+        } else {
+          break;
+        }
+      }
+      consecutiveFailures[engKey] = streak;
+    }
+
     const recentJobs = sampled.slice(0, 10).map((m) => {
       const s = Date.parse(m.startedAt || "");
       const e = m.finishedAt ? Date.parse(m.finishedAt) : Date.now();
@@ -1245,6 +1565,7 @@ export class JobManager {
       byStatus,
       finishedCount,
       successRatePct,
+      consecutiveFailures,
       byEngine,
       byModel,
       byAction,

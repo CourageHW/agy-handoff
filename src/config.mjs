@@ -2,6 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { renameSyncSafe } from "./runners/common.mjs";
+import { VALID_ROUTING_POLICIES, VALID_TASK_TYPES } from "./routing.mjs";
+
+export const DEFAULT_ROUTING_CONFIG = {
+  policy: "balanced",
+  taskTypes: {},
+};
 
 export const BUILTIN_DEFAULTS = {
   codex: { model: "gpt-6.2-sol", effort: "high" },
@@ -119,10 +125,41 @@ export function normalizeEffort(engine, effort) {
   return normalized;
 }
 
+function normalizeRoutingConfig(rawRouting) {
+  if (!isPlainObject(rawRouting)) {
+    return {
+      policy: DEFAULT_ROUTING_CONFIG.policy,
+      taskTypes: {},
+      allowUnsandboxedWriteAuto: false,
+    };
+  }
+  const policy = VALID_ROUTING_POLICIES.includes(rawRouting.policy)
+    ? rawRouting.policy
+    : DEFAULT_ROUTING_CONFIG.policy;
+  const taskTypes = {};
+  if (isPlainObject(rawRouting.taskTypes)) {
+    for (const [k, v] of Object.entries(rawRouting.taskTypes)) {
+      if (VALID_TASK_TYPES.includes(k) && ["codex", "claude", "auto"].includes(v)) {
+        taskTypes[k] = v;
+      }
+    }
+  }
+  return {
+    policy,
+    taskTypes,
+    allowUnsandboxedWriteAuto: Boolean(rawRouting.allowUnsandboxedWriteAuto),
+  };
+}
+
 export function loadConfig(overridePath) {
   const filePath = getConfigPath(overridePath);
   if (!fs.existsSync(filePath)) {
-    return { version: 1, defaults: {}, commands: {} };
+    return {
+      version: 1,
+      defaults: {},
+      commands: {},
+      routing: { policy: DEFAULT_ROUTING_CONFIG.policy, taskTypes: {} },
+    };
   }
   let parsed;
   try {
@@ -137,6 +174,7 @@ export function loadConfig(overridePath) {
     version: typeof parsed.version === "number" ? parsed.version : 1,
     defaults: isPlainObject(parsed.defaults) ? parsed.defaults : {},
     commands: isPlainObject(parsed.commands) ? parsed.commands : {},
+    routing: normalizeRoutingConfig(parsed.routing),
   };
 }
 
@@ -292,6 +330,7 @@ function cloneConfig(config) {
     version: config.version || 1,
     defaults: structuredClone(config.defaults || {}),
     commands: structuredClone(config.commands || {}),
+    routing: structuredClone(config.routing || DEFAULT_ROUTING_CONFIG),
   };
 }
 
@@ -353,7 +392,12 @@ export function updateConfig(args = {}, overridePath) {
         delete next.defaults[args.engine];
         clearEngineFromCommands(next.commands, args.engine);
       } else {
-        next = { version: 1, defaults: {}, commands: {} };
+        next = {
+          version: 1,
+          defaults: {},
+          commands: {},
+          routing: { policy: DEFAULT_ROUTING_CONFIG.policy, taskTypes: {} },
+        };
       }
     } else if (scope === "default") {
       next = cloneConfig(current);
@@ -489,9 +533,59 @@ export function updateConfig(args = {}, overridePath) {
     }
   }
 
+  if (args.routing !== undefined) {
+    if (!isPlainObject(args.routing)) {
+      throw new Error("`routing` must be an object with `policy` and/or `taskTypes`.");
+    }
+    if (args.routing.policy !== undefined) {
+      if (!VALID_ROUTING_POLICIES.includes(args.routing.policy)) {
+        throw new Error(
+          `Invalid routing policy "${args.routing.policy}". Expected one of: ${VALID_ROUTING_POLICIES.join(", ")}.`,
+        );
+      }
+      next.routing.policy = args.routing.policy;
+      changed = true;
+    }
+    if (args.routing.taskTypes !== undefined) {
+      if (!isPlainObject(args.routing.taskTypes)) {
+        throw new Error("`routing.taskTypes` must be an object keyed by task type.");
+      }
+      if (!isPlainObject(next.routing.taskTypes)) {
+        next.routing.taskTypes = {};
+      }
+      for (const [taskKey, engineVal] of Object.entries(args.routing.taskTypes)) {
+        if (!VALID_TASK_TYPES.includes(taskKey)) {
+          throw new Error(
+            `Invalid routing taskType "${taskKey}". Expected one of: ${VALID_TASK_TYPES.join(", ")}.`,
+          );
+        }
+        if (engineVal === null || engineVal === "auto") {
+          delete next.routing.taskTypes[taskKey];
+        } else if (engineVal === "codex" || engineVal === "claude") {
+          next.routing.taskTypes[taskKey] = engineVal;
+        } else {
+          throw new Error(
+            `Invalid routing engine "${engineVal}" for taskType "${taskKey}". Expected "codex", "claude", "auto", or null.`,
+          );
+        }
+        changed = true;
+      }
+    }
+    if (args.routing.allowUnsandboxedWriteAuto !== undefined) {
+      if (typeof args.routing.allowUnsandboxedWriteAuto !== "boolean") {
+        throw new Error(
+          "`routing.allowUnsandboxedWriteAuto` must be a boolean.",
+        );
+      }
+      next.routing.allowUnsandboxedWriteAuto =
+        args.routing.allowUnsandboxedWriteAuto;
+      changed = true;
+    }
+  }
+
   if (!changed) {
     throw new Error(
-      "No configuration changes provided. Pass model/effort, codexModel/claudeModel, or defaults/commands.",
+      "No configuration changes provided. Pass model/effort, codexModel/claudeModel, defaults/commands, or routing.",
     );
   }
 

@@ -23,7 +23,7 @@ If the user specified what to do right after `/agy-handoff:handoff-models`:
   Call `handoff_config({ action: "get" })` and present a compact Markdown table of effective models/efforts for `default`, `review`, `delegate`, and `cross-review` plus the `configPath`.
 - **Reset settings** (e.g. `reset`, `reset review`, `reset all`):
   Call `handoff_config({ action: "reset", scope, engine })` and show the updated table.
-- **Set directly** (e.g. `review codex gpt-6.2-sol xhigh`, `cross-review claude opus5.5 high`, `default codex gpt-6.2-sol high claude opus5.5 high`, or setting both engines for one command):
+- **Set directly** (e.g. `review codex gpt-6.2-sol xhigh`, `cross-review claude opus5.5 high`, `default codex gpt-6.2-sol high claude opus5.5 high`, or setting `routing` policy via `handoff_config({ action: "set", routing: { policy: "balanced" | "prefer-codex" | "prefer-claude" | "least-used", taskTypes: { ... } } })`):
   Call `handoff_config({ action: "set", ... })` immediately without extra confirmation questions, then print the updated effective table.
 
 Shorthand aliases supported automatically:

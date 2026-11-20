@@ -24,4 +24,4 @@ jobs:
       - name: Run unit and MCP integration tests
         run: npm test
       - name: Verify CLI doctor, models, and stats commands run cleanly
-        run: node src/cli.mjs doctor && node src/cli.mjs models && node src/cli.mjs stats
+        run: node src/cli.mjs doctor && node src/cli.mjs models && node src/cli.mjs stats && node src/cli.mjs stats --table

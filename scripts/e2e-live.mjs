@@ -345,6 +345,91 @@ async function main() {
         throw new Error(`Resumed turn did not recall token: ${t2.output}`);
       }
     });
+
+    // 11. Context-aware handoff + executionEvidence + auto-routing + stats --table
+    await record("Context-aware handoff, auto-routing & executionEvidence", async () => {
+      if (!hasCodex && !hasClaude) {
+        return { skipped: true, reason: "No CLI available" };
+      }
+      const res = await handleToolCall(
+        "handoff_review",
+        {
+          engine: "auto",
+          taskType: "review",
+          style: "standard",
+          scope: "custom",
+          context: {
+            files: ["math.mjs"],
+            summary: "Verify average() behavior on an empty array.",
+          },
+          effort: "low",
+          cwd: tempRepo,
+          timeoutSec: 120,
+        },
+        jm,
+      );
+      if (!res.ok || !res.routingDecision || !res.executionEvidence) {
+        throw new Error("Missing routingDecision or executionEvidence");
+      }
+      if (res.executionEvidence.observedToolCalls < 1) {
+        throw new Error("Expected observedToolCalls >= 1 during live inspection");
+      }
+      const statsTable = spawnSync(
+        process.execPath,
+        [path.join(repoRoot, "src/cli.mjs"), "stats", "--table"],
+        {
+          encoding: "utf8",
+          env: { ...process.env, AGY_HANDOFF_JOBS_DIR: jobsDir },
+        },
+      );
+      if (statsTable.status !== 0 || !/By Engine:/.test(statsTable.stdout)) {
+        throw new Error(statsTable.stderr || "stats --table failed");
+      }
+    });
+
+    // 12. Structured JSON cross-review live against real Codex + Claude
+    await record("Structured parallel cross-review & citation check", async () => {
+      if (!hasCodex || !hasClaude) {
+        return { skipped: true, reason: "Requires both codex and claude" };
+      }
+      const res = await handleToolCall(
+        "handoff_cross_review",
+        {
+          style: "standard",
+          scope: "uncommitted",
+          context: { files: ["math.mjs"] },
+          structured: true,
+          codexEffort: "low",
+          claudeEffort: "low",
+          cwd: tempRepo,
+          timeoutSec: 150,
+        },
+        jm,
+      );
+      if (
+        !res.ok ||
+        res.results.codex.skipped ||
+        !res.results.codex.ok ||
+        res.results.claude.skipped ||
+        !res.results.claude.ok ||
+        !res.structuredSynthesis
+      ) {
+        throw new Error(
+          `Expected both engines to succeed with structuredSynthesis: codex.ok=${res.results?.codex?.ok}, claude.ok=${res.results?.claude?.ok}`,
+        );
+      }
+      if (
+        res.structuredSynthesis.parseErrors.codex ||
+        res.structuredSynthesis.parseErrors.claude
+      ) {
+        throw new Error(
+          `Structured parse error: ${JSON.stringify(res.structuredSynthesis.parseErrors)}`,
+        );
+      }
+      return {
+        detail: `consensus=${res.structuredSynthesis.consensus.length}, citations=${res.structuredSynthesis.citationSummary.validCitations}/${res.structuredSynthesis.citationSummary.totalFindings}`,
+      };
+    });
   } finally {
     jm.shutdown();
     fs.rmSync(outsideFile, { force: true });
