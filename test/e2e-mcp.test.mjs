@@ -138,7 +138,39 @@ function createFakeCodexScript(recordFile) {
         console.log(JSON.stringify({ type: "item.started", item: { type: "command_execution", command: "git status" } }));
         console.log(JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120, output_tokens: 30 } }));
         let msg;
-        if (hasSchema) {
+        if (hasSchema && prompt.includes("Collaborative Implementation Plan Request")) {
+          msg = JSON.stringify({
+            architectureSummary: "Codex plan blueprint",
+            fileChanges: [
+              {
+                file: "target.mjs",
+                action: "create",
+                responsibility: "Core module",
+                summary: "Create target module",
+              },
+            ],
+            implementationSteps: [
+              {
+                step: 1,
+                title: "Add target module",
+                files: ["target.mjs"],
+                testFirst: "Write unit test for target.mjs",
+                implementation: "Export main function",
+                verificationCommand: "npm test",
+              },
+            ],
+            risksAndEdgeCases: [
+              {
+                severity: "high",
+                title: "Null input risk",
+                detail: "Missing null guard on input",
+                mitigation: "Validate input before processing",
+              },
+            ],
+            testStrategy: ["Run npm test"],
+            openQuestions: [],
+          });
+        } else if (hasSchema) {
           msg = JSON.stringify({
             summary: "Codex structured ok",
             findings: [
@@ -186,8 +218,41 @@ function createFakeClaudeScript(recordFile) {
       const prompt = Buffer.concat(chunks).toString("utf8");
       console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "claude_e2e_202", model: "claude-opus-5-5" }));
       console.log(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "target.mjs" } }] } }));
-      const structured = hasSchema
+      const isPlan = hasSchema && prompt.includes("Collaborative Implementation Plan Request");
+      const structured = isPlan
         ? {
+            architectureSummary: "Claude plan blueprint",
+            fileChanges: [
+              {
+                file: "target.mjs",
+                action: "create",
+                responsibility: "Core module",
+                summary: "Create target module with null guard",
+              },
+            ],
+            implementationSteps: [
+              {
+                step: 1,
+                title: "Implement target module",
+                files: ["target.mjs"],
+                testFirst: "Assert null guard behavior",
+                implementation: "Create target.mjs",
+                verificationCommand: "npm test",
+              },
+            ],
+            risksAndEdgeCases: [
+              {
+                severity: "high",
+                title: "Null input risk",
+                detail: "Missing null guard on input can crash caller",
+                mitigation: "Add explicit guard",
+              },
+            ],
+            testStrategy: ["Run npm test"],
+            openQuestions: [],
+          }
+        : hasSchema
+          ? {
             summary: "Claude structured ok",
             findings: [
               {
@@ -228,6 +293,8 @@ test("Plugin bundle structure and manifest references are complete", () => {
     "skills/handoff-review/SKILL.md",
     "skills/handoff-delegate/SKILL.md",
     "skills/handoff-cross-review/SKILL.md",
+    "skills/handoff-grill-me/SKILL.md",
+    "skills/handoff-plan/SKILL.md",
     "skills/handoff-models/SKILL.md",
     "CHANGELOG.md",
   ]) {
@@ -377,6 +444,31 @@ test("E2E MCP: doctor, read-only reviews, parallel cross-review, background life
     });
     assert.ok(statsResp.data.stats.analyzedJobs >= 7);
     assert.equal(statsResp.data.stats.byEngine.claude.reportedTokens.output > 0, true);
+
+    // 6. Collaborative Plan (handoff_plan) with Grill-Me decisions & disk file target verification
+    const planResp = await client.callTool("handoff_plan", {
+      goal: "Add target.mjs module",
+      phase: "design",
+      decisions: [
+        {
+          branch: "Scope & Non-Goals",
+          question: "Should target.mjs be zero-dependency?",
+          answer: "Yes, use Node.js built-ins only.",
+        },
+      ],
+      requirements: ["Create target.mjs"],
+      cwd: tmpDir,
+    });
+    assert.equal(planResp.isError, false);
+    assert.equal(planResp.data.ok, true);
+    assert.equal(planResp.data.structuredPlan.consensusFileChanges.length, 1);
+    assert.equal(planResp.data.structuredPlan.consensusFileChanges[0].file, "target.mjs");
+    assert.equal(
+      planResp.data.structuredPlan.consensusFileChanges[0].targetVerification.status,
+      "valid_new_file",
+    );
+    assert.equal(planResp.data.structuredPlan.mergedRisksAndEdgeCases.length, 1);
+    assert.equal(planResp.data.structuredPlan.mergedRisksAndEdgeCases[0].agreementCount, 2);
   } finally {
     await client.close().catch(() => {});
     fs.rmSync(tmpDir, RM_OPTS);

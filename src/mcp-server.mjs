@@ -20,6 +20,11 @@ import {
   buildStructuredSingleReview,
   synthesizeStructuredCrossReview,
 } from "./cross-review.mjs";
+import {
+  STRUCTURED_PLAN_SCHEMA,
+  buildCollaborativePlanPrompt,
+  synthesizeCollaborativePlan,
+} from "./plan.mjs";
 import { VALID_TASK_TYPES, resolveAutoEngine } from "./routing.mjs";
 import {
   isInsideGitRepo,
@@ -325,7 +330,7 @@ export const TOOLS = [
         },
         scope: {
           type: "string",
-          enum: ["default", "review", "delegate", "cross-review", "all"],
+          enum: ["default", "review", "delegate", "cross-review", "plan", "all"],
         },
         engine: {
           type: "string",
@@ -453,6 +458,105 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "handoff_plan",
+    description:
+      "Design or stress-test a collaborative implementation plan across OpenAI Codex, Anthropic Claude Code, and Google Antigravity (gemini-4-neon-high) in parallel (3-to-1). Combines Grill-Me spec decisions with zero-handwaving TDD task breakdown and mechanical disk file-target verification.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        goal: {
+          type: "string",
+          description:
+            "Primary feature, refactor, or architecture goal to plan.",
+        },
+        phase: {
+          type: "string",
+          enum: ["discover", "design"],
+          default: "design",
+          description:
+            "'discover' scans the codebase in read-only mode to surface high-leverage design-tree questions for a Grill-Me interview; 'design' (default) synthesizes a complete 3-to-1 implementation plan from confirmed spec decisions.",
+        },
+        decisions: {
+          type: "array",
+          description:
+            "Confirmed decisions from the Grill-Me spec interview (array of strings or { branch?, question, answer } objects).",
+          items: {
+            type: ["string", "object"],
+          },
+        },
+        requirements: {
+          type: "array",
+          description: "Explicit functional requirements agreed with the user.",
+          items: { type: "string" },
+        },
+        nonGoals: {
+          type: "array",
+          description: "Explicit out-of-scope items (YAGNI boundaries).",
+          items: { type: "string" },
+        },
+        constraints: {
+          type: "array",
+          description: "Technical, performance, security, or compatibility constraints.",
+          items: { type: "string" },
+        },
+        acceptanceCriteria: {
+          type: "array",
+          description: "Concrete verification and acceptance criteria.",
+          items: { type: "string" },
+        },
+        context: CONTEXT_SCHEMA,
+        structured: {
+          type: "boolean",
+          default: true,
+          description:
+            "Request structured JSON plan blueprints from all 3 engines and synthesize consensus file targets, disk verification, merged risks, and test strategy.",
+        },
+        codexModel: { type: "string" },
+        codexEffort: {
+          type: "string",
+          enum: ["low", "medium", "high", "xhigh", "max", "ultra"],
+        },
+        claudeModel: { type: "string" },
+        claudeEffort: {
+          type: "string",
+          enum: ["low", "medium", "high", "xhigh", "max"],
+        },
+        agyModel: {
+          type: "string",
+          description:
+            "Optional model override for the 3rd Antigravity planner (default: gemini-4-neon-high / 'neon').",
+        },
+        agyEffort: {
+          type: "string",
+          enum: ["low", "medium", "high", "xhigh", "max"],
+          description: "Optional effort override for the 3rd Antigravity planner (default: high).",
+        },
+        includeAgy: {
+          type: "boolean",
+          default: true,
+          description:
+            "Run the 3rd Antigravity planner (default: gemini-4-neon-high) in parallel for 3-to-1 collaborative plan synthesis.",
+        },
+        cwd: {
+          type: "string",
+          description: "Repository working directory (defaults to server cwd).",
+        },
+        skipGitRepoCheck: {
+          type: "boolean",
+          description: "Allow Codex to run outside a Git repository.",
+        },
+        timeoutSec: {
+          type: "integer",
+          minimum: 10,
+          maximum: 3600,
+          description: "Execution timeout in seconds (default 600).",
+        },
+      },
+      required: ["goal"],
+      additionalProperties: false,
+    },
+  },
 ];
 
 const TOOL_MAP = new Map(TOOLS.map((tool) => [tool.name, tool]));
@@ -521,11 +625,18 @@ export function validateToolArgs(toolName, rawArgs) {
       if (!isPlainObject(val)) {
         throw new Error(`Argument "${key}" for ${toolName} must be an object.`);
       }
+    } else if (prop.type === "array") {
+      if (!Array.isArray(val)) {
+        throw new Error(`Argument "${key}" for ${toolName} must be an array.`);
+      }
     }
   }
 
   if (toolName === "handoff_delegate" && !args.prompt.trim()) {
     throw new Error('Argument "prompt" for handoff_delegate cannot be empty.');
+  }
+  if (toolName === "handoff_plan" && !args.goal.trim()) {
+    throw new Error('Argument "goal" for handoff_plan cannot be empty.');
   }
 
   return args;
@@ -1521,6 +1632,288 @@ export async function handleToolCall(
         overrideSpec,
         timeoutMs: effTimeoutSec ? effTimeoutSec * 1000 : null,
       });
+    }
+
+    case "handoff_plan": {
+      const startedAt = Date.now();
+      const codexBin = findCodexBinary();
+      const claudeBin = findClaudeBinary();
+      const agyBin = findAgyBinary();
+      const shouldIncludeAgy =
+        args.includeAgy !== false &&
+        (Boolean(agyBin) ||
+          args.includeAgy === true ||
+          process.env.AGY_HANDOFF_AGY_BIN !== undefined ||
+          (!process.env.AGY_HANDOFF_CODEX_BIN && !process.env.AGY_HANDOFF_CLAUDE_BIN));
+
+      if (!codexBin && !claudeBin && (!shouldIncludeAgy || !agyBin)) {
+        throw new Error(
+          "Neither `codex`, `claude`, nor `agy` CLI was found in PATH. Run `handoff_doctor` for install instructions.",
+        );
+      }
+
+      const timeoutSec = validateTimeoutSec(args.timeoutSec);
+      const phase = args.phase || "design";
+      const structured = args.structured !== false;
+      const resolvedCwd = validateCwd(args.cwd);
+      const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
+      const skipGitRepoCheck =
+        args.skipGitRepoCheck ?? !isInsideGitRepo(resolvedCwd);
+
+      const composedPrompt = buildCollaborativePlanPrompt({
+        goal: args.goal,
+        phase,
+        decisions: args.decisions,
+        requirements: args.requirements,
+        nonGoals: args.nonGoals,
+        constraints: args.constraints,
+        acceptanceCriteria: args.acceptanceCriteria,
+        promptPrefix: ctx.promptPrefix,
+        structured,
+      });
+
+      const codexCfg = resolveEngineConfig("plan", "codex", {
+        model: args.codexModel,
+        effort: args.codexEffort,
+      });
+      const claudeCfg = resolveEngineConfig("plan", "claude", {
+        model: args.claudeModel,
+        effort: args.claudeEffort,
+      });
+      const agyCfg = resolveEngineConfig("plan", "agy", {
+        model: args.agyModel,
+        effort: args.agyEffort,
+      });
+
+      let progressSeq = 0;
+      const tasks = [];
+
+      if (codexBin) {
+        tasks.push(
+          runTrackedForeground(
+            jobManager,
+            {
+              engine: "codex",
+              action: "plan",
+              cwd: resolvedCwd,
+              model: codexCfg.model,
+              effort: codexCfg.effort,
+              mode: "read-only",
+              structured,
+              handoffContext: ctx.metadata,
+              jsonStream: true,
+              onProgress: ({ message }) => {
+                if (typeof onProgress === "function") {
+                  progressSeq += 1;
+                  onProgress({ progress: progressSeq, message });
+                }
+              },
+            },
+            (onEvent) =>
+              runCodexExec({
+                prompt: composedPrompt,
+                mode: "read-only",
+                model: codexCfg.model,
+                effort: codexCfg.effort,
+                cwd: resolvedCwd,
+                skipGitRepoCheck,
+                ephemeral: true,
+                timeoutSec,
+                signal,
+                outputSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
+                onEvent,
+              }),
+          ).catch((err) => ({
+            engine: "codex",
+            ok: false,
+            error: err.message,
+          })),
+        );
+      } else {
+        tasks.push(
+          Promise.resolve({
+            engine: "codex",
+            skipped: true,
+            reason: "codex CLI not installed",
+          }),
+        );
+      }
+
+      if (claudeBin) {
+        tasks.push(
+          runTrackedForeground(
+            jobManager,
+            {
+              engine: "claude",
+              action: "plan",
+              cwd: resolvedCwd,
+              model: claudeCfg.model,
+              effort: claudeCfg.effort,
+              mode: "read-only",
+              structured,
+              handoffContext: ctx.metadata,
+              jsonStream: true,
+              onProgress: ({ message }) => {
+                if (typeof onProgress === "function") {
+                  progressSeq += 1;
+                  onProgress({ progress: progressSeq, message });
+                }
+              },
+            },
+            (onEvent) =>
+              runClaudeExec({
+                prompt: composedPrompt,
+                mode: "read-only",
+                model: claudeCfg.model,
+                effort: claudeCfg.effort,
+                cwd: resolvedCwd,
+                ephemeral: true,
+                timeoutSec,
+                signal,
+                jsonSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
+                onEvent,
+              }),
+          ).catch((err) => ({
+            engine: "claude",
+            ok: false,
+            error: err.message,
+          })),
+        );
+      } else {
+        tasks.push(
+          Promise.resolve({
+            engine: "claude",
+            skipped: true,
+            reason: "claude CLI not installed",
+          }),
+        );
+      }
+
+      if (shouldIncludeAgy) {
+        if (agyBin) {
+          tasks.push(
+            runTrackedForeground(
+              jobManager,
+              {
+                engine: "agy",
+                action: "plan",
+                cwd: resolvedCwd,
+                model: agyCfg.model,
+                effort: agyCfg.effort,
+                mode: "read-only",
+                structured,
+                handoffContext: ctx.metadata,
+                jsonStream: true,
+                onProgress: ({ message }) => {
+                  if (typeof onProgress === "function") {
+                    progressSeq += 1;
+                    onProgress({ progress: progressSeq, message });
+                  }
+                },
+              },
+              (onEvent) =>
+                runAgyExec({
+                  prompt: composedPrompt,
+                  mode: "read-only",
+                  model: agyCfg.model,
+                  effort: agyCfg.effort,
+                  cwd: resolvedCwd,
+                  timeoutSec,
+                  signal,
+                  jsonSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
+                  onEvent,
+                }),
+            ).catch((err) => ({
+              engine: "agy",
+              ok: false,
+              error: err.message,
+            })),
+          );
+        } else {
+          tasks.push(
+            Promise.resolve({
+              engine: "agy",
+              skipped: true,
+              reason: "agy CLI not installed",
+            }),
+          );
+        }
+      }
+
+      const [codexResult, claudeResult, agyResult = null] = await Promise.all(tasks);
+      const allResults = shouldIncludeAgy
+        ? [codexResult, claudeResult, agyResult]
+        : [codexResult, claudeResult];
+      const enginesAttempted = allResults.filter((r) => r && !r.skipped).length;
+      const enginesSucceeded = allResults.filter((r) => r && !r.skipped && r.ok).length;
+      const enginesFailed = allResults.filter((r) => r && !r.skipped && !r.ok).length;
+      const enginesSkipped = allResults.filter((r) => r && r.skipped).length;
+      const ok = enginesSucceeded > 0;
+
+      let structuredPlan;
+      if (structured) {
+        try {
+          structuredPlan = synthesizeCollaborativePlan({
+            codexOutput:
+              !codexResult.skipped && codexResult.ok ? codexResult.output : "",
+            codexStructured:
+              !codexResult.skipped && codexResult.ok
+                ? codexResult.structuredOutput || null
+                : null,
+            codexStatus: codexResult,
+            claudeOutput:
+              !claudeResult.skipped && claudeResult.ok ? claudeResult.output : "",
+            claudeStructured:
+              !claudeResult.skipped && claudeResult.ok
+                ? claudeResult.structuredOutput || null
+                : null,
+            claudeStatus: claudeResult,
+            ...(shouldIncludeAgy
+              ? {
+                  agyOutput:
+                    !agyResult.skipped && agyResult.ok ? agyResult.output : "",
+                  agyStructured:
+                    !agyResult.skipped && agyResult.ok
+                      ? agyResult.structuredOutput || null
+                      : null,
+                  agyStatus: agyResult,
+                }
+              : {}),
+            cwd: resolvedCwd,
+          });
+        } catch (err) {
+          structuredPlan = {
+            error: err.message,
+          };
+        }
+      }
+
+      return {
+        ok,
+        architecture: shouldIncludeAgy ? "3-to-1" : "2-to-1",
+        synthesizer: "current_session_model",
+        phase,
+        goal: args.goal,
+        ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
+        summary: {
+          totalDurationMs: Date.now() - startedAt,
+          enginesAttempted,
+          enginesSucceeded,
+          enginesFailed,
+          enginesSkipped,
+        },
+        resolvedModels: {
+          codex: codexCfg,
+          claude: claudeCfg,
+          ...(shouldIncludeAgy ? { agy: agyCfg } : {}),
+        },
+        ...(structuredPlan ? { structuredPlan } : {}),
+        results: {
+          codex: codexResult,
+          claude: claudeResult,
+          ...(shouldIncludeAgy ? { agy: agyResult } : {}),
+        },
+      };
     }
 
     default:

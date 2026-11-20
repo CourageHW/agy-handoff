@@ -18,6 +18,13 @@ import {
   synthesizeStructuredCrossReview,
   verifyFindingCitation,
 } from "../src/cross-review.mjs";
+import {
+  STRUCTURED_PLAN_SCHEMA,
+  buildCollaborativePlanPrompt,
+  parseStructuredPlanPayload,
+  synthesizeCollaborativePlan,
+  verifyPlanFileTarget,
+} from "../src/plan.mjs";
 import { validateWorkspaceWriteCwd } from "../src/runners/common.mjs";
 import { buildCodexExecSpec } from "../src/runners/codex.mjs";
 import { buildClaudeExecSpec } from "../src/runners/claude.mjs";
@@ -671,6 +678,224 @@ test("JobManager.retryJob and handoff_job_retry enforce read-only, block oversiz
     });
     assert.equal(tableCli.status, 0);
     assert.match(tableCli.stdout, /agy-handoff usage & performance stats/);
+  } finally {
+    fs.rmSync(dir, RM_OPTS);
+  }
+});
+
+test("handoff_plan & synthesizeCollaborativePlan: Grill-Me decisions, 3-to-1 plan synthesis, disk file target verification, and merged risks", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-plan-test-"));
+  try {
+    fs.writeFileSync(path.join(dir, "existing.mjs"), "export const x = 1;\n", "utf8");
+    fs.mkdirSync(path.join(dir, "subdir"));
+
+    assert.equal(STRUCTURED_PLAN_SCHEMA.additionalProperties, false);
+
+    // 1. Disk target verification for create / modify / delete / collision / escape
+    assert.equal(
+      verifyPlanFileTarget({ file: "existing.mjs", action: "modify" }, dir).status,
+      "valid_existing_file",
+    );
+    assert.equal(
+      verifyPlanFileTarget({ file: "ghost.mjs", action: "modify" }, dir).status,
+      "missing_target_file",
+    );
+    assert.equal(
+      verifyPlanFileTarget({ file: "new-feature.mjs", action: "create" }, dir).status,
+      "valid_new_file",
+    );
+    assert.equal(
+      verifyPlanFileTarget({ file: "existing.mjs", action: "create" }, dir).status,
+      "existing_file_collision",
+    );
+    assert.equal(
+      verifyPlanFileTarget({ file: "../outside.mjs", action: "create" }, dir).status,
+      "path_outside_workspace",
+    );
+    assert.equal(
+      verifyPlanFileTarget({ file: "subdir", action: "modify" }, dir).status,
+      "not_a_file",
+    );
+
+    // 2. Prompt construction includes Grill-Me decision ledger and zero-handwaving rules
+    const prompt = buildCollaborativePlanPrompt({
+      goal: "Add 3-to-1 collaborative planning",
+      phase: "design",
+      decisions: [
+        {
+          branch: "Scope & Non-Goals",
+          question: "Should handoff_plan mutate files?",
+          answer: "No, strictly read-only planning.",
+        },
+      ],
+      requirements: ["Verify file targets on disk"],
+      nonGoals: ["Automatic code mutation during planning"],
+      constraints: ["Zero npm dependencies"],
+      acceptanceCriteria: ["All unit and E2E tests pass"],
+    });
+    assert.match(prompt, /Confirmed Spec Decisions \(Grill-Me Interview Ledger\)/);
+    assert.match(prompt, /\[Scope & Non-Goals\]/);
+    assert.match(prompt, /Zero-Handwaving Engineering Blueprint/);
+
+    // 3. 3-to-1 Collaborative Plan synthesis across Codex + Claude + Antigravity Neon
+    const planSynthesis = synthesizeCollaborativePlan({
+      codexStructured: {
+        architectureSummary: "Codex modular plan module with strict JSON schema",
+        fileChanges: [
+          {
+            file: "existing.mjs",
+            action: "modify",
+            responsibility: "Export plan handler",
+            summary: "Add handoff_plan case",
+          },
+          {
+            file: "new-plan.mjs",
+            action: "create",
+            responsibility: "Plan synthesis engine",
+            summary: "Implement synthesizeCollaborativePlan",
+          },
+          {
+            file: "conflict.mjs",
+            action: "create",
+            responsibility: "Conflict file",
+            summary: "Create new helper",
+          },
+        ],
+        implementationSteps: [
+          {
+            step: 1,
+            title: "Create plan module",
+            files: ["new-plan.mjs"],
+            testFirst: "Write test for verifyPlanFileTarget",
+            implementation: "Implement verifyPlanFileTarget and synthesizeCollaborativePlan",
+            verificationCommand: "node --test test/orchestration.test.mjs",
+          },
+        ],
+        risksAndEdgeCases: [
+          {
+            severity: "high",
+            title: "Hallucinated file paths in modify action",
+            detail: "Models may cite non-existent files to modify",
+            mitigation: "Verify existence on disk via verifyPlanFileTarget",
+          },
+        ],
+        testStrategy: ["Run node --test test/orchestration.test.mjs"],
+        openQuestions: [],
+      },
+      claudeStructured: {
+        architectureSummary: "Claude 3-to-1 plan synthesizer with Grill-Me ledger",
+        fileChanges: [
+          {
+            file: "./existing.mjs",
+            action: "modify",
+            responsibility: "Register handoff_plan",
+            summary: "Wire MCP tool and handler",
+          },
+          {
+            file: "new-plan.mjs",
+            action: "create",
+            responsibility: "Core plan synthesis",
+            summary: "Add 3-to-1 file consensus",
+          },
+          {
+            file: "conflict.mjs",
+            action: "modify",
+            responsibility: "Conflict file",
+            summary: "Modify existing helper",
+          },
+        ],
+        implementationSteps: [
+          {
+            step: 1,
+            title: "Wire handoff_plan",
+            files: ["existing.mjs", "new-plan.mjs"],
+            testFirst: "Assert handoff_plan in tools/list",
+            implementation: "Add handoff_plan schema and handler",
+            verificationCommand: "npm test",
+          },
+        ],
+        risksAndEdgeCases: [
+          {
+            severity: "critical",
+            title: "Hallucinated target file paths during modify",
+            detail: "Planner may reference missing files on disk",
+            mitigation: "Check fs.lstatSync in verifyPlanFileTarget",
+          },
+        ],
+        testStrategy: ["Run agy plugin validate --strict ."],
+        openQuestions: ["Should discover phase default to structured output?"],
+      },
+      agyStructured: {
+        architectureSummary: "Antigravity Neon High 3-to-1 plan blueprint",
+        fileChanges: [
+          {
+            file: "existing.mjs",
+            action: "modify",
+            responsibility: "MCP server tool entry",
+            summary: "Expose handoff_plan",
+          },
+          {
+            file: "ghost-only-agy.mjs",
+            action: "modify",
+            responsibility: "Non-existent target",
+            summary: "Modify missing file",
+          },
+        ],
+        implementationSteps: [],
+        risksAndEdgeCases: [],
+        testStrategy: [],
+        openQuestions: [],
+      },
+      cwd: dir,
+    });
+
+    assert.equal(planSynthesis.architecture, "3-to-1");
+    assert.equal(planSynthesis.consensusFileChanges.length, 2);
+    // existing.mjs is 3/3 Unanimous
+    assert.equal(planSynthesis.consensusFileChanges[0].file, "existing.mjs");
+    assert.equal(planSynthesis.consensusFileChanges[0].agreementCount, 3);
+    assert.equal(planSynthesis.consensusFileChanges[0].unanimous, true);
+    assert.equal(
+      planSynthesis.consensusFileChanges[0].targetVerification.status,
+      "valid_existing_file",
+    );
+    // new-plan.mjs is 2/3 Majority
+    assert.equal(planSynthesis.consensusFileChanges[1].file, "new-plan.mjs");
+    assert.equal(planSynthesis.consensusFileChanges[1].agreementCount, 2);
+    assert.equal(planSynthesis.consensusFileChanges[1].unanimous, false);
+    assert.equal(
+      planSynthesis.consensusFileChanges[1].targetVerification.status,
+      "valid_new_file",
+    );
+    // conflict.mjs has create vs modify conflict
+    assert.equal(planSynthesis.fileActionConflicts.length, 1);
+    assert.equal(planSynthesis.fileActionConflicts[0].file, "conflict.mjs");
+    // ghost-only-agy.mjs is unique to agy and flagged as missing_target_file
+    assert.equal(planSynthesis.uniqueFileChanges.agy.length, 1);
+    assert.equal(
+      planSynthesis.uniqueFileChanges.agy[0].targetVerification.status,
+      "missing_target_file",
+    );
+    // Risks merged across Codex & Claude and upgraded to highest severity (critical)
+    assert.equal(planSynthesis.mergedRisksAndEdgeCases.length, 1);
+    assert.equal(planSynthesis.mergedRisksAndEdgeCases[0].agreementCount, 2);
+    assert.equal(planSynthesis.mergedRisksAndEdgeCases[0].severity, "critical");
+    assert.equal(planSynthesis.openQuestions.length, 1);
+    assert.equal(
+      planSynthesis.verificationStages.semanticVerification.semanticallyVerified,
+      false,
+    );
+
+    const badPlan = parseStructuredPlanPayload({
+      architectureSummary: "ok",
+      fileChanges: [{ file: "a.mjs", action: "overwrite", responsibility: "r", summary: "s" }],
+      implementationSteps: [],
+      risksAndEdgeCases: [],
+      testStrategy: [],
+      openQuestions: [],
+    });
+    assert.equal(badPlan.parsed, null);
+    assert.match(badPlan.error, /invalid action/i);
   } finally {
     fs.rmSync(dir, RM_OPTS);
   }

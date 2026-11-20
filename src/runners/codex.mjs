@@ -28,6 +28,7 @@ import {
 } from "./common.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "../events.mjs";
 import { parseStructuredReviewPayload } from "../cross-review.mjs";
+import { parseStructuredPlanPayload } from "../plan.mjs";
 
 export const MIN_CODEX_VERSION = "0.160.0";
 export const REQUIRED_CODEX_EXEC_FLAGS = [
@@ -509,7 +510,8 @@ async function executeCodex(spec, options) {
   }
   const structuredOutput =
     options.outputSchema && res.ok
-      ? parseStructuredReviewPayload(rawOutput).parsed
+      ? parseStructuredReviewPayload(rawOutput).parsed ||
+        parseStructuredPlanPayload(rawOutput).parsed
       : null;
   const output = truncateOutput(rawOutput || res.stderr);
   const sessionId =

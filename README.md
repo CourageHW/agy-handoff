@@ -12,6 +12,7 @@ It reuses whatever `codex`, `claude`, and `agy` sessions you are already signed 
 
 - **Zero npm dependencies**: Pure Node.js (`>= 18.18.0`) standard library modules.
 - **3-to-1 Verified Cross-Review (`codex` + `claude` + `agy` ➔ Session Model)**: Instead of a 2-engine review that can deadlock 1-vs-1, `handoff_cross_review` (and the 3 dedicated subagents `codex-handoff`, `claude-handoff`, `neon-handoff`) runs **OpenAI Codex (`gpt-6.2-sol` `high`)**, **Anthropic Claude Code (`claude-opus-5-5` `high`)**, and **Google Antigravity Agent (`gemini-4-neon-high` `high`)** in parallel, then hands all 3 independent reviews to **your current session's conversation model** for the final 3-to-1 synthesis (`3/3 Unanimous` & `2/3 Majority` Consensus, Tie-Breaks, Unique Findings, and 4-Stage Verification).
+- **Grill-Me Spec Interview & 3-to-1 Collaborative Plan (`handoff_plan`)**: Combines design-tree spec interviewing (`/agy-handoff:handoff-grill-me`, inspired by `mattpocock/skills` `grill-me` — exploring the codebase first and resolving decision branches one by one) with 3-to-1 collaborative implementation planning (`/agy-handoff:handoff-plan` & `handoff_plan`, inspired by `obra/superpowers` `writing-plans` — zero-handwaving TDD tasks, 3-way file consensus, merged edge cases, and mechanical disk file-target verification).
 - **Context-aware handoff**: Pass scoped `context: { files, summary, constraints, acceptanceCriteria }` (or `--files` / `--context-summary`) so external CLIs start directly on target code instead of wasting tokens re-scanning the repo.
 - **Factual execution evidence**: Every foreground and background run records observed tool calls, commands, inspected/modified files, and `git status` delta (`workspaceGitDelta`), flagging runs where no tools or edits occurred.
 - **Safe read-only recovery & opt-in routing**: `handoff_doctor` recovers orphaned `running` jobs from crashed servers, `handoff_job_retry` replays failed `read-only` jobs (same engine or fallback engine, never `workspace-write`), and optional `engine: "auto"` balances usage across recent jobs and unhealthy streaks.
@@ -71,11 +72,13 @@ node src/cli.mjs stats --table
 
 ## Slash Commands & Subagents
 
-The plugin bundles five slash commands/skills (`handoff-doctor`, `handoff-review`, `handoff-cross-review`, `handoff-delegate`, `handoff-models`) and two context-isolated subagents (`codex-handoff`, `claude-handoff`):
+The plugin bundles seven slash commands/skills (`handoff-doctor`, `handoff-review`, `handoff-cross-review`, `handoff-grill-me`, `handoff-plan`, `handoff-delegate`, `handoff-models`) and three context-isolated subagents (`codex-handoff`, `claude-handoff`, `neon-handoff`):
 
 - `/agy-handoff:handoff-doctor`: Checks Node.js, binary paths/versions, required CLI flags, auth hints, model/routing defaults, and recovers stale orphaned jobs.
-- `/agy-handoff:handoff-review`: Runs a read-only `standard` or `adversarial` review (`engine: "codex" | "claude" | "auto"`) with optional `context` and `structured` JSON output.
-- `/agy-handoff:handoff-cross-review`: Runs Codex and Claude Code in parallel and synthesizes **Consensus Findings**, **Unique Findings**, **Conflicts / Trade-offs**, and **Verified Findings** (confirmed directly against local files).
+- `/agy-handoff:handoff-review`: Runs a read-only `standard` or `adversarial` review (`engine: "codex" | "claude" | "agy" | "auto"`) with optional `context` and `structured` JSON output.
+- `/agy-handoff:handoff-cross-review`: Runs Codex, Claude Code, and Antigravity Neon in parallel (`3-to-1`) and synthesizes **Consensus Findings (`3/3` & `2/3`)**, **Unique Findings (`1/3`)**, **Conflicts / Tie-Breaks**, and **Verified Findings** (confirmed directly against local files).
+- `/agy-handoff:handoff-grill-me`: Conducts a relentless design-tree spec interview (exploring the codebase first so it never asks what code already answers, and optionally calling `handoff_plan({ phase: "discover" })`) to produce a locked Decision Ledger.
+- `/agy-handoff:handoff-plan`: Runs `handoff_plan` across Codex, Claude Code, and Antigravity Neon in parallel (`read-only`) to synthesize a zero-handwaving, TDD-first **3-to-1 Master Implementation Plan** with verified disk file targets.
 - `/agy-handoff:handoff-delegate`: Delegates focused investigations, debugging, or scoped edits (`read-only` by default; `workspace-write` requires explicit user confirmation). Supports session resume (`sessionId`) and execution evidence tracking.
 - `/agy-handoff:handoff-models`: Views or updates default models, reasoning efforts, and `routing` policy (`balanced`, `prefer-codex`, `prefer-claude`, `least-used`, or per `taskType`).
 
@@ -156,14 +159,15 @@ node src/cli.mjs models reset all
 
 ---
 
-## MCP Tools (9)
+## MCP Tools (10)
 
 | Tool | Description |
 | :--- | :--- |
 | `handoff_doctor` | Inspect Node, CLI paths/versions, flag compatibility, auth hints, routing defaults, and recover stale jobs |
-| `handoff_review` | Read-only `standard`/`adversarial` review (`codex`, `claude`, or `auto`), optional `context` and `structured` output |
+| `handoff_review` | Read-only `standard`/`adversarial` review (`codex`, `claude`, `agy`, or `auto`), optional `context` and `structured` output |
 | `handoff_delegate` | Scoped task handoff (`read-only` default, `workspace-write` opt-in; supports `context`, `engine: "auto"`, `sessionId`) |
-| `handoff_cross_review` | Parallel Codex + Claude Code review with timing summary and optional `structured` Consensus/Conflict/Citation synthesis |
+| `handoff_cross_review` | Parallel 3-to-1 Codex + Claude Code + Antigravity Neon review with `structured` Consensus/Conflict/Citation synthesis |
+| `handoff_plan` | Parallel 3-to-1 collaborative planning (`phase: "discover" \| "design"`) combining Grill-Me spec decisions, TDD steps, and disk file-target verification |
 | `handoff_config` | Get, set, or reset model defaults, effort levels, and routing policies |
 | `handoff_job_status` | List jobs, long-poll live events (`waitSec`, `sinceSeq`), or fetch aggregated stats (`includeStats`) |
 | `handoff_job_result` | Fetch final output, `executionEvidence`, `sessionId`, `costUsd`, and `usage` for a job |

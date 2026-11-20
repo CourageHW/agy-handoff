@@ -68,6 +68,23 @@ const COMMAND_ALLOWED_FLAGS = {
     "skip-git-repo-check",
     "timeout",
   ]),
+  plan: new Set([
+    "goal",
+    "phase",
+    "prompt",
+    "files",
+    "context-summary",
+    "structured",
+    "codex-model",
+    "codex-effort",
+    "claude-model",
+    "claude-effort",
+    "agy-model",
+    "agy-effort",
+    "cwd",
+    "skip-git-repo-check",
+    "timeout",
+  ]),
   models: new Set([
     "scope",
     "engine",
@@ -122,9 +139,10 @@ function printHelp() {
 
 Usage:
   agy-handoff doctor
-  agy-handoff review --engine <codex|claude|auto> [options]
-  agy-handoff delegate --engine <codex|claude|auto> --prompt "<task>" [options]
+  agy-handoff review --engine <codex|claude|agy|auto> [options]
+  agy-handoff delegate --engine <codex|claude|agy|auto> --prompt "<task>" [options]
   agy-handoff cross-review [options]
+  agy-handoff plan --goal "<feature or architecture goal>" [--phase <discover|design>] [options]
   agy-handoff models [show | set [scope] [engine] [model] [effort] | reset [scope]]
   agy-handoff jobs [status <jobId> | result <jobId> | cancel <jobId> | retry <jobId> [--fallback] | stats [--limit <n>] [--table]]
   agy-handoff stats [--limit <n>] [--table]
@@ -325,6 +343,24 @@ async function main() {
         prompt: flags.prompt || positional.join(" ") || undefined,
         context: parseCliContext(flags),
         structured: flags.structured ? true : undefined,
+        codexModel: flags["codex-model"],
+        codexEffort: flags["codex-effort"],
+        claudeModel: flags["claude-model"],
+        claudeEffort: flags["claude-effort"],
+        agyModel: flags["agy-model"],
+        agyEffort: flags["agy-effort"],
+        cwd: flags.cwd,
+        skipGitRepoCheck: skipGitRepoCheck ? true : undefined,
+        timeoutSec,
+      });
+      break;
+
+    case "plan":
+      result = await handleToolCall("handoff_plan", {
+        goal: flags.goal || flags.prompt || positional.join(" "),
+        phase: flags.phase || "design",
+        context: parseCliContext(flags),
+        structured: flags.structured !== undefined ? Boolean(flags.structured) : true,
         codexModel: flags["codex-model"],
         codexEffort: flags["codex-effort"],
         claudeModel: flags["claude-model"],

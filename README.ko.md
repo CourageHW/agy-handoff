@@ -12,6 +12,7 @@
 
 - **의존성 제로 (Zero-dependency)**: Node.js (`>= 18.18.0`) 내장 모듈만으로 동작해 설치 즉시 실행됩니다.
 - **3-to-1 구조화 교차 리뷰 (`codex` + `claude` + `agy` ➔ 현재 세션 모델)**: **OpenAI Codex(`gpt-6.2-sol` `high`)** + **Claude Code(`claude-opus-5-5` `high`)** + **Antigravity Agent(`gemini-4-neon-high` `high`)** 3개 리뷰어가 병렬로 리뷰한 뒤 현재 세션의 대화 모델이 최종 취합(**3-to-1**)합니다. 만장일치(`3/3`) 및 다수결(`2/3`) 합의(`Consensus`), 심각도 충돌 타이브레이크(`Conflicts`), 단독 지적(`Unique`)을 분류하고, **① CLI 실행 성공(`cliExecution`) · ② JSON 스키마 파싱(`structuredJsonParse`) · ③ 파일·라인 인용 유효성(`citationValidity`) · ④ 의미 검증(`semanticVerification: false`)** 4단계를 명확히 분리합니다.
+- **Grill-Me 스펙 인터뷰 & 3-to-1 협업 플랜 설계 (`handoff_plan`)**: 코드베이스를 먼저 탐색한 뒤 디자인 트리 분기별로 핵심 의사결정을 질문하는 `/agy-handoff:handoff-grill-me`(`mattpocock/skills` `grill-me` 방식)와, 확정된 스펙을 바탕으로 Codex · Claude Code · Antigravity Neon 3개 모델이 병렬로 아키텍처·TDD 작업 단계·엣지케이스를 설계하고 디스크 대상 파일 존재 여부(`verifyPlanFileTarget`)까지 기계적으로 검증하는 `/agy-handoff:handoff-plan`(`obra/superpowers` `writing-plans` + `3-to-1` 합성)을 제공합니다.
 - **Context-Aware Handoff**: `context: { files, summary, constraints, acceptanceCriteria }` (CLI `--files`, `--context-summary`)로 대상 파일과 기존 분석 결과를 넘겨 불필요한 전체 저장소 재탐색을 줄입니다.
 - **실행 증거 검증 (`executionEvidence`)**: 모든 실행에서 실제 관측된 도구 호출 수, 명령어, 조회/수정 파일, `workspace-write` 전후 `git status` 변화량(`workspaceGitDelta`)과 경고를 기록해 허위/빈 완료 보고를 잡아냅니다.
 - **안전한 Read-only 재시도 & 선택적 정책 라우팅**: `handoff_doctor`가 비정상 종료된 잔존 잡을 정리하고, `handoff_job_retry`로 실패/타임아웃된 `read-only` 잡만 동일/대체 엔진으로 안전하게 재실행(`workspace-write`는 거부)합니다.
@@ -74,14 +75,15 @@ node src/cli.mjs stats --table
 
 ---
 
-## 제공 MCP 도구 (9개)
+## 제공 MCP 도구 (10개)
 
 | 도구 | 설명 |
 | :--- | :--- |
 | `handoff_doctor` | Node/CLI 경로·버전·필수 플래그 호환성·인증·라우팅 설정 점검 및 잔존 `running` 잡 복구 |
-| `handoff_review` | 읽기 전용 `standard`/`adversarial` 리뷰 (`codex`, `claude`, `auto`), `context` 및 `structured` 지원 |
+| `handoff_review` | 읽기 전용 `standard`/`adversarial` 리뷰 (`codex`, `claude`, `agy`, `auto`), `context` 및 `structured` 지원 |
 | `handoff_delegate` | 조사·디버깅·작업 위임 (`read-only` 기본, `workspace-write` 명시적 opt-in, `context`, `auto`, `sessionId`) |
-| `handoff_cross_review` | Codex/Claude 병렬 교차 리뷰 + 소요 시간 요약 + 선택적 `structured` 합의/충돌/인용 검증 결과 |
+| `handoff_cross_review` | Codex + Claude + Antigravity Neon 3-to-1 병렬 교차 리뷰 + `structured` 합의/충돌/인용 검증 결과 |
+| `handoff_plan` | Grill-Me 스펙 의사결정 기반 3-to-1 병렬 구현 플랜 설계 (`phase: "discover" \| "design"`, 디스크 파일 타겟 검증 및 리스크/TDD 단계 통합) |
 | `handoff_config` | 전역/명령어별 모델·강도 및 `routing` 정책 조회·변경·초기화 |
 | `handoff_job_status` | 잡 목록, 실시간 이벤트 long-polling (`waitSec`, `sinceSeq`), 통계 (`includeStats`) 조회 |
 | `handoff_job_result` | 실행 결과, `executionEvidence`, `sessionId`, `costUsd`, `usage` 조회 |

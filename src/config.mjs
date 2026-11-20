@@ -15,8 +15,8 @@ export const BUILTIN_DEFAULTS = {
   agy: { model: "gemini-4-neon-high", effort: "high" },
 };
 
-export const CONFIGURABLE_COMMANDS = ["review", "delegate", "cross-review"];
-export const VALID_SCOPES = ["default", "review", "delegate", "cross-review"];
+export const CONFIGURABLE_COMMANDS = ["review", "delegate", "cross-review", "plan"];
+export const VALID_SCOPES = ["default", "review", "delegate", "cross-review", "plan"];
 export const VALID_ENGINES = ["codex", "claude", "agy"];
 
 export const ALLOWED_EFFORTS_BY_ENGINE = {
@@ -397,6 +397,7 @@ export function getEffectiveConfigSummary(overridePath) {
     review: buildPair("review"),
     delegate: buildPair("delegate"),
     "cross-review": buildPair("cross-review"),
+    plan: buildPair("plan"),
   };
 
   return {

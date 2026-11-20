@@ -3,12 +3,12 @@ name: handoff-models
 description: >-
   Use this skill when the user wants to view, set, or reset default Codex and
   Claude Code models and reasoning effort levels globally or per command
-  (review, delegate, cross-review) via `/agy-handoff:handoff-models`.
+  (review, delegate, cross-review, plan) via `/agy-handoff:handoff-models`.
 ---
 
 # Handoff Models
 
-Inspect and configure default `codex` and `claude` models and reasoning effort globally or per command (`review`, `delegate`, `cross-review`).
+Inspect and configure default `codex`, `claude`, and `agy` models and reasoning effort globally or per command (`review`, `delegate`, `cross-review`, `plan`).
 
 Built-in plugin defaults:
 - **Codex**: `gpt-6.2-sol` (`effort: "high"`)
