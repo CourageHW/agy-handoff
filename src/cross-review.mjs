@@ -40,16 +40,63 @@ function stripCodeFence(text) {
   return match ? match[1].trim() : trimmed;
 }
 
-function normalizeSeverity(raw) {
-  const s = String(raw || "medium").trim().toLowerCase();
-  return VALID_SEVERITIES.has(s) ? s : "medium";
-}
+function normalizeFinding(item, index) {
+  if (!item || typeof item !== "object" || Array.isArray(item)) {
+    return {
+      finding: null,
+      error: `Finding at index ${index} must be a JSON object.`,
+    };
+  }
+  const rawSeverity =
+    typeof item.severity === "string" ? item.severity.trim().toLowerCase() : "";
+  if (!VALID_SEVERITIES.has(rawSeverity)) {
+    return {
+      finding: null,
+      error: `Finding at index ${index} has invalid severity "${item.severity}". Expected critical, high, medium, or low.`,
+    };
+  }
+  if (typeof item.title !== "string" || !item.title.trim()) {
+    return {
+      finding: null,
+      error: `Finding at index ${index} is missing a non-empty string \`title\`.`,
+    };
+  }
+  if (typeof item.detail !== "string") {
+    return {
+      finding: null,
+      error: `Finding at index ${index} is missing string \`detail\`.`,
+    };
+  }
+  if (typeof item.fix !== "string") {
+    return {
+      finding: null,
+      error: `Finding at index ${index} is missing string \`fix\`.`,
+    };
+  }
+  if (
+    item.file !== null &&
+    item.file !== undefined &&
+    typeof item.file !== "string"
+  ) {
+    return {
+      finding: null,
+      error: `Finding at index ${index} has non-string \`file\`.`,
+    };
+  }
+  if (
+    item.line !== null &&
+    item.line !== undefined &&
+    (typeof item.line !== "number" || !Number.isInteger(item.line))
+  ) {
+    return {
+      finding: null,
+      error: `Finding at index ${index} has non-integer \`line\`.`,
+    };
+  }
 
-function normalizeFinding(item) {
-  if (!item || typeof item !== "object") return null;
-  const title = typeof item.title === "string" ? item.title.trim() : "";
-  const detail = typeof item.detail === "string" ? item.detail.trim() : "";
-  const fix = typeof item.fix === "string" ? item.fix.trim() : "";
+  const title = item.title.trim();
+  const detail = item.detail.trim();
+  const fix = item.fix.trim();
   const file =
     typeof item.file === "string" && item.file.trim()
       ? item.file.trim()
@@ -59,12 +106,15 @@ function normalizeFinding(item) {
       ? item.line
       : null;
   return {
-    severity: normalizeSeverity(item.severity),
-    file,
-    line,
-    title: title || compactText(detail, 80) || "Finding",
-    detail,
-    fix,
+    finding: {
+      severity: rawSeverity,
+      file,
+      line,
+      title,
+      detail,
+      fix,
+    },
+    error: null,
   };
 }
 
@@ -93,14 +143,29 @@ export function parseStructuredReviewPayload(rawTextOrObject) {
   if (!obj || typeof obj !== "object" || Array.isArray(obj)) {
     return { parsed: null, error: "Structured review payload must be a JSON object." };
   }
+  if (typeof obj.summary !== "string") {
+    return {
+      parsed: null,
+      error: "Structured review payload is missing string `summary`.",
+    };
+  }
   if (!Array.isArray(obj.findings)) {
     return { parsed: null, error: "Structured review payload is missing `findings` array." };
   }
 
+  const normalizedFindings = [];
+  for (let i = 0; i < obj.findings.length; i += 1) {
+    const { finding, error } = normalizeFinding(obj.findings[i], i);
+    if (error) {
+      return { parsed: null, error };
+    }
+    normalizedFindings.push(finding);
+  }
+
   return {
     parsed: {
-      summary: typeof obj.summary === "string" ? obj.summary.trim() : "",
-      findings: obj.findings.map(normalizeFinding).filter(Boolean),
+      summary: obj.summary.trim(),
+      findings: normalizedFindings,
     },
     error: null,
   };
@@ -289,47 +354,477 @@ function normalizeFileKey(finding, workspaceReal) {
     .trim();
 }
 
-function titleOverlap(aTitle, bTitle) {
-  const words = (s) =>
-    new Set(
-      String(s || "")
-        .toLowerCase()
-        .split(/[^a-z0-9_]+/)
-        .filter((w) => w.length >= 3),
-    );
-  const a = words(aTitle);
-  const b = words(bTitle);
-  if (a.size === 0 || b.size === 0) return false;
-  let shared = 0;
-  for (const w of a) {
-    if (b.has(w)) shared += 1;
+const FINDING_STOPWORDS = new Set([
+  "the",
+  "and",
+  "for",
+  "with",
+  "that",
+  "this",
+  "from",
+  "when",
+  "where",
+  "which",
+  "while",
+  "into",
+  "onto",
+  "upon",
+  "about",
+  "above",
+  "below",
+  "under",
+  "over",
+  "should",
+  "could",
+  "would",
+  "can",
+  "cannot",
+  "will",
+  "may",
+  "might",
+  "must",
+  "not",
+  "only",
+  "also",
+  "very",
+  "more",
+  "most",
+  "some",
+  "such",
+  "than",
+  "then",
+  "there",
+  "here",
+  "have",
+  "has",
+  "had",
+  "having",
+  "been",
+  "being",
+  "are",
+  "was",
+  "were",
+  "does",
+  "did",
+  "doing",
+  "make",
+  "makes",
+  "made",
+  "use",
+  "uses",
+  "used",
+  "using",
+  "call",
+  "calls",
+  "called",
+  "add",
+  "added",
+  "adding",
+  "fix",
+  "fixes",
+  "fixed",
+  "issue",
+  "issues",
+  "bug",
+  "bugs",
+  "error",
+  "errors",
+  "problem",
+  "problems",
+  "code",
+  "file",
+  "files",
+  "line",
+  "lines",
+  "function",
+  "functions",
+  "method",
+  "methods",
+  "value",
+  "values",
+  "return",
+  "returns",
+  "returned",
+  "returning",
+  "instead",
+  "before",
+  "after",
+  "check",
+  "checks",
+  "checked",
+  "checking",
+  "ensure",
+  "ensures",
+  "allow",
+  "allows",
+  "allowed",
+  "cause",
+  "causes",
+  "caused",
+  "lead",
+  "leads",
+  "result",
+  "results",
+  "missing",
+  "lack",
+  "lacks",
+  "without",
+  "potential",
+  "possible",
+]);
+
+const CONCEPT_PATTERNS = [
+  {
+    id: "null_or_empty",
+    regex:
+      /(\bnull\b|\bundefined\b|\bempty\b|\bzero[-_\s]?length\b|\.length\s*===\s*0\b)/i,
+  },
+  {
+    id: "div_by_zero",
+    regex:
+      /(\bdivid(?:e|ed|ing|ision)\s+by\s+zero\b|\bnan\b|\b0\s*\/\s*0\b|\/\s*[a-z0-9_.]*length\b)/i,
+  },
+  {
+    id: "injection",
+    regex:
+      /(\binjection\b|\bxss\b|\bsqli\b|\beval\b|\bunsanitized\b|\bcommand\s+injection\b)/i,
+  },
+  {
+    id: "path_traversal",
+    regex:
+      /(\bpath\s+traversal\b|\bdirectory\s+traversal\b|\bsymlink\b|\boutside\s+workspace\b|\.\.\/)/i,
+  },
+  {
+    id: "race_or_toctou",
+    regex: /(\brace\s+condition\b|\btoctou\b|\bconcurrent\b|\batomic\b)/i,
+  },
+  {
+    id: "auth_or_permission",
+    regex:
+      /(\bauth(?:entication|orization)?\b|\bbypass\b|\bpermission\b|\bprivilege\b|\btoken\b|\bcredential\b)/i,
+  },
+  {
+    id: "resource_leak",
+    regex:
+      /(\bmemory\s+leak\b|\bresource\s+leak\b|\bunclosed\b|\borphan\b|\bfile\s+descriptor\b)/i,
+  },
+  {
+    id: "type_validation",
+    regex:
+      /(\btypeof\b|\btype\s+(?:check|validation|mismatch|error)\b|\binstanceof\b|\bisarray\b|\bisinteger\b)/i,
+  },
+  {
+    id: "bounds_or_overflow",
+    regex:
+      /(\bout\s+of\s+(?:bounds|range)\b|\boverflow\b|\bunderflow\b|\boff[-_\s]by[-_\s]one\b)/i,
+  },
+];
+
+function stemWord(word) {
+  if (word.length > 5 && word.endsWith("ing")) return word.slice(0, -3);
+  if (word.length > 5 && word.endsWith("tion")) return word.slice(0, -4);
+  if (word.length > 5 && word.endsWith("sion")) return word.slice(0, -4);
+  if (word.length > 4 && word.endsWith("ed")) return word.slice(0, -2);
+  if (word.length > 4 && word.endsWith("es")) return word.slice(0, -2);
+  if (word.length > 3 && word.endsWith("s") && !word.endsWith("ss")) {
+    return word.slice(0, -1);
   }
-  const threshold = Math.min(a.size, b.size) === 1 ? 1 : 2;
-  return shared >= threshold;
+  return word;
 }
 
-function matchScore(codexFinding, claudeFinding, workspaceReal) {
+function extractSignificantTokens(text) {
+  const expanded = String(text || "").replace(/([a-z0-9])([A-Z])/g, "$1 $2");
+  const rawTokens = expanded
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .filter((w) => w.length >= 3 && !FINDING_STOPWORDS.has(w));
+  const out = new Set();
+  for (const w of rawTokens) {
+    out.add(w);
+    const stemmed = stemWord(w);
+    if (stemmed.length >= 3 && !FINDING_STOPWORDS.has(stemmed)) {
+      out.add(stemmed);
+    }
+  }
+  return out;
+}
+
+function extractConceptTags(finding) {
+  const combined = `${finding?.title || ""} ${finding?.detail || ""} ${finding?.fix || ""}`;
+  const tags = new Set();
+  for (const { id, regex } of CONCEPT_PATTERNS) {
+    if (regex.test(combined)) {
+      tags.add(id);
+    }
+  }
+  return tags;
+}
+
+function intersectSets(setA, setB) {
+  const shared = [];
+  for (const item of setA) {
+    if (setB.has(item)) {
+      shared.push(item);
+    }
+  }
+  return shared;
+}
+
+export function evaluateFindingMatch(codexFinding, claudeFinding, workspaceReal) {
   const fileA = normalizeFileKey(codexFinding, workspaceReal);
   const fileB = normalizeFileKey(claudeFinding, workspaceReal);
-  if (fileA && fileB) {
-    if (fileA !== fileB) return 0;
-    if (codexFinding.line !== null && claudeFinding.line !== null) {
-      const dist = Math.abs(codexFinding.line - claudeFinding.line);
-      return dist <= 5 ? 100 - dist : 0;
+
+  // Findings pointing to two different files are never the same location defect.
+  if ((fileA && !fileB) || (!fileA && fileB)) {
+    return { matched: false, score: 0, sharedTokens: [], sharedConcepts: [], lineDistance: null };
+  }
+  if (fileA && fileB && fileA !== fileB) {
+    return { matched: false, score: 0, sharedTokens: [], sharedConcepts: [], lineDistance: null };
+  }
+
+  const titleA = extractSignificantTokens(codexFinding.title);
+  const titleB = extractSignificantTokens(claudeFinding.title);
+  const bodyA = extractSignificantTokens(
+    `${codexFinding.title || ""} ${codexFinding.detail || ""} ${codexFinding.fix || ""}`,
+  );
+  const bodyB = extractSignificantTokens(
+    `${claudeFinding.title || ""} ${claudeFinding.detail || ""} ${claudeFinding.fix || ""}`,
+  );
+  const conceptsA = extractConceptTags(codexFinding);
+  const conceptsB = extractConceptTags(claudeFinding);
+
+  const sharedTitleTokens = intersectSets(titleA, titleB);
+  const sharedBodyTokens = intersectSets(bodyA, bodyB);
+  const sharedConcepts = intersectSets(conceptsA, conceptsB);
+
+  const lineA = codexFinding.line;
+  const lineB = claudeFinding.line;
+  const lineDistance =
+    lineA !== null && lineB !== null ? Math.abs(lineA - lineB) : null;
+
+  // Same file with explicit line numbers on both sides.
+  // Line proximity alone is NEVER sufficient: findings must also share defect tokens/concepts.
+  if (fileA && fileB && lineDistance !== null) {
+    if (lineDistance <= 5) {
+      const hasSemanticOverlap =
+        sharedTitleTokens.length >= 1 ||
+        sharedBodyTokens.length >= 2 ||
+        (sharedBodyTokens.length >= 1 && sharedConcepts.length >= 1);
+      if (!hasSemanticOverlap) {
+        return {
+          matched: false,
+          score: 0,
+          sharedTokens: sharedBodyTokens,
+          sharedConcepts,
+          lineDistance,
+        };
+      }
+      const score =
+        100 -
+        lineDistance +
+        Math.min(20, sharedTitleTokens.length * 6 + sharedBodyTokens.length * 3 + sharedConcepts.length * 5);
+      return {
+        matched: true,
+        score,
+        sharedTokens: sharedBodyTokens.slice(0, 8),
+        sharedConcepts,
+        lineDistance,
+      };
     }
-    return titleOverlap(codexFinding.title, claudeFinding.title) ? 50 : 0;
+
+    if (lineDistance <= 15) {
+      const hasStrongOverlap =
+        (sharedTitleTokens.length >= 1 && sharedBodyTokens.length >= 2) ||
+        sharedBodyTokens.length >= 3 ||
+        (sharedBodyTokens.length >= 2 && sharedConcepts.length >= 1);
+      if (!hasStrongOverlap) {
+        return {
+          matched: false,
+          score: 0,
+          sharedTokens: sharedBodyTokens,
+          sharedConcepts,
+          lineDistance,
+        };
+      }
+      const score =
+        75 -
+        lineDistance +
+        Math.min(15, sharedTitleTokens.length * 5 + sharedBodyTokens.length * 2 + sharedConcepts.length * 4);
+      return {
+        matched: true,
+        score,
+        sharedTokens: sharedBodyTokens.slice(0, 8),
+        sharedConcepts,
+        lineDistance,
+      };
+    }
+
+    return {
+      matched: false,
+      score: 0,
+      sharedTokens: sharedBodyTokens,
+      sharedConcepts,
+      lineDistance,
+    };
   }
-  if (!fileA && !fileB && titleOverlap(codexFinding.title, claudeFinding.title)) {
-    return 25;
+
+  // Same file, at least one finding lacks an explicit line number.
+  if (fileA && fileB) {
+    const minTitleSize = Math.min(titleA.size, titleB.size);
+    const titleThreshold = minTitleSize === 1 ? 1 : 2;
+    const hasFileLevelOverlap =
+      sharedTitleTokens.length >= titleThreshold ||
+      (sharedTitleTokens.length >= 1 && sharedBodyTokens.length >= 2) ||
+      (sharedBodyTokens.length >= 2 && sharedConcepts.length >= 1);
+    if (!hasFileLevelOverlap) {
+      return {
+        matched: false,
+        score: 0,
+        sharedTokens: sharedBodyTokens,
+        sharedConcepts,
+        lineDistance: null,
+      };
+    }
+    return {
+      matched: true,
+      score: 50 + Math.min(15, sharedTitleTokens.length * 5 + sharedBodyTokens.length * 2),
+      sharedTokens: sharedBodyTokens.slice(0, 8),
+      sharedConcepts,
+      lineDistance: null,
+    };
   }
-  return 0;
+
+  // Neither finding specifies a file (repo-wide / architectural finding).
+  const minTitleSize = Math.min(titleA.size, titleB.size);
+  const titleThreshold = minTitleSize === 1 ? 1 : 2;
+  if (
+    sharedTitleTokens.length >= titleThreshold ||
+    (sharedTitleTokens.length >= 1 && sharedBodyTokens.length >= 3)
+  ) {
+    return {
+      matched: true,
+      score: 25 + Math.min(10, sharedTitleTokens.length * 3 + sharedBodyTokens.length),
+      sharedTokens: sharedBodyTokens.slice(0, 8),
+      sharedConcepts,
+      lineDistance: null,
+    };
+  }
+
+  return {
+    matched: false,
+    score: 0,
+    sharedTokens: sharedBodyTokens,
+    sharedConcepts,
+    lineDistance: null,
+  };
+}
+
+function summarizeCitations(findings) {
+  let validCitations = 0;
+  let fileOnlyCitations = 0;
+  let invalidOrMissingCitations = 0;
+  const statusCounts = {};
+
+  for (const f of findings) {
+    const st = f?.citation?.status || "unlocated";
+    statusCounts[st] = (statusCounts[st] || 0) + 1;
+    if (st === "valid_citation") {
+      validCitations += 1;
+    } else if (st === "file_exists_no_line") {
+      fileOnlyCitations += 1;
+    } else {
+      invalidOrMissingCitations += 1;
+    }
+  }
+
+  return {
+    totalFindings: findings.length,
+    validCitations,
+    fileOnlyCitations,
+    invalidOrMissingCitations,
+    statusCounts,
+    note: "Mechanical check of file existence and line bounds only; semanticallyVerified is always false until the parent agent inspects the underlying code.",
+  };
+}
+
+export function buildStructuredSingleReview({
+  engine,
+  cliOk = true,
+  exitCode = 0,
+  cliError = null,
+  output = "",
+  structuredOutput = null,
+  cwd,
+}) {
+  const resolvedCwd = path.resolve(cwd || process.cwd());
+  let parsedResult = { parsed: null, error: null };
+  const parseAttempted = Boolean(cliOk);
+
+  if (parseAttempted) {
+    if (structuredOutput !== null && structuredOutput !== undefined) {
+      parsedResult = parseStructuredReviewPayload(structuredOutput);
+    } else if (output && String(output).trim()) {
+      parsedResult = parseStructuredReviewPayload(output);
+    } else {
+      parsedResult = { parsed: null, error: "Empty structured review output." };
+    }
+  }
+
+  const fileCache = new Map();
+  const findings = parsedResult.parsed
+    ? parsedResult.parsed.findings
+        .slice(0, MAX_VERIFIED_FINDINGS_PER_ENGINE)
+        .map((f) => ({
+          ...f,
+          citation: verifyFindingCitation(f, resolvedCwd, fileCache),
+        }))
+    : [];
+  const citationSummary = summarizeCitations(findings);
+
+  return {
+    summary: parsedResult.parsed?.summary ?? null,
+    findings,
+    parseError: parsedResult.error,
+    citationSummary,
+    verificationStages: {
+      cliExecution: {
+        engine,
+        attempted: true,
+        ok: Boolean(cliOk),
+        exitCode: exitCode ?? (cliOk ? 0 : -1),
+        error: cliOk ? null : cliError || "CLI execution failed.",
+      },
+      structuredJsonParse: {
+        attempted: parseAttempted,
+        ok: Boolean(parseAttempted && parsedResult.parsed && !parsedResult.error),
+        findingsCount: findings.length,
+        error: parseAttempted ? parsedResult.error : "Skipped because CLI execution did not succeed.",
+      },
+      citationValidity: {
+        checked: Boolean(parseAttempted && parsedResult.parsed),
+        totalFindings: citationSummary.totalFindings,
+        validCitations: citationSummary.validCitations,
+        fileOnlyCitations: citationSummary.fileOnlyCitations,
+        invalidOrMissingCitations: citationSummary.invalidOrMissingCitations,
+        statusCounts: citationSummary.statusCounts,
+      },
+      semanticVerification: {
+        verified: false,
+        semanticallyVerified: false,
+        status: "pending_host_inspection",
+        note: "CLI exit=0, valid JSON schema, and valid file/line citation do NOT prove the defect is real. Inspect the cited code semantics before applying fixes.",
+      },
+    },
+  };
 }
 
 export function synthesizeStructuredCrossReview({
   codexOutput,
   codexStructured,
+  codexStatus = null,
   claudeOutput,
   claudeStructured,
+  claudeStatus = null,
   cwd,
 }) {
   const resolvedCwd = path.resolve(cwd || process.cwd());
@@ -340,18 +835,53 @@ export function synthesizeStructuredCrossReview({
     // keep resolvedCwd
   }
 
-  const parseSide = (structuredObj, rawOutput) => {
-    if (structuredObj) {
-      return parseStructuredReviewPayload(structuredObj);
+  const normalizeEngineExec = (status, structuredObj, rawOutput) => {
+    if (status && typeof status === "object") {
+      const skipped = Boolean(status.skipped);
+      const attempted = !skipped && status.attempted !== false;
+      const ok = attempted && Boolean(status.ok);
+      return {
+        attempted,
+        ok,
+        skipped,
+        exitCode: status.exitCode ?? (ok ? 0 : skipped ? null : -1),
+        error: ok ? null : status.error || (skipped ? status.reason || "CLI skipped" : "CLI execution failed"),
+      };
     }
-    if (rawOutput && String(rawOutput).trim()) {
-      return parseStructuredReviewPayload(rawOutput);
-    }
-    return { parsed: null, error: null };
+    const hasInput =
+      (structuredObj !== null && structuredObj !== undefined) ||
+      Boolean(rawOutput && String(rawOutput).trim());
+    return {
+      attempted: hasInput,
+      ok: hasInput,
+      skipped: !hasInput,
+      exitCode: hasInput ? 0 : null,
+      error: null,
+    };
   };
 
-  const codexParsed = parseSide(codexStructured, codexOutput);
-  const claudeParsed = parseSide(claudeStructured, claudeOutput);
+  const codexExec = normalizeEngineExec(codexStatus, codexStructured, codexOutput);
+  const claudeExec = normalizeEngineExec(claudeStatus, claudeStructured, claudeOutput);
+
+  const parseSide = (execInfo, structuredObj, rawOutput) => {
+    if (!execInfo.attempted || !execInfo.ok) {
+      return { parsed: null, error: null, attempted: false };
+    }
+    if (structuredObj !== null && structuredObj !== undefined) {
+      return { ...parseStructuredReviewPayload(structuredObj), attempted: true };
+    }
+    if (rawOutput && String(rawOutput).trim()) {
+      return { ...parseStructuredReviewPayload(rawOutput), attempted: true };
+    }
+    return {
+      parsed: null,
+      error: "Empty structured review output.",
+      attempted: true,
+    };
+  };
+
+  const codexParsed = parseSide(codexExec, codexStructured, codexOutput);
+  const claudeParsed = parseSide(claudeExec, claudeStructured, claudeOutput);
 
   const fileCache = new Map();
   const annotate = (findings) =>
@@ -374,22 +904,28 @@ export function synthesizeStructuredCrossReview({
 
   for (const cf of codexFindings) {
     let bestIdx = -1;
-    let bestScore = 0;
+    let bestMatch = null;
     for (let j = 0; j < claudeFindings.length; j += 1) {
       if (matchedClaude.has(j)) continue;
-      const score = matchScore(cf, claudeFindings[j], workspaceReal);
-      if (score > bestScore) {
-        bestScore = score;
+      const candidate = evaluateFindingMatch(cf, claudeFindings[j], workspaceReal);
+      if (candidate.matched && (!bestMatch || candidate.score > bestMatch.score)) {
+        bestMatch = candidate;
         bestIdx = j;
       }
     }
-    if (bestIdx !== -1) {
+    if (bestIdx !== -1 && bestMatch) {
       matchedClaude.add(bestIdx);
       const cl = claudeFindings[bestIdx];
       const entry = {
         file: normalizeFileKey(cf, workspaceReal) || cf.file || cl.file,
         line: cf.line ?? cl.line,
         severityMatch: cf.severity === cl.severity,
+        matchBasis: {
+          score: bestMatch.score,
+          lineDistance: bestMatch.lineDistance,
+          sharedTokens: bestMatch.sharedTokens,
+          sharedConcepts: bestMatch.sharedConcepts,
+        },
         codex: cf,
         claude: cl,
       };
@@ -400,6 +936,7 @@ export function synthesizeStructuredCrossReview({
           line: entry.line,
           codexSeverity: cf.severity,
           claudeSeverity: cl.severity,
+          matchBasis: entry.matchBasis,
           codex: cf,
           claude: cl,
         });
@@ -412,18 +949,7 @@ export function synthesizeStructuredCrossReview({
   const uniqueClaude = claudeFindings.filter((_, idx) => !matchedClaude.has(idx));
 
   const allFindings = [...codexFindings, ...claudeFindings];
-  let validCitations = 0;
-  let fileOnlyCitations = 0;
-  let invalidOrMissingCitations = 0;
-  for (const f of allFindings) {
-    if (f.citation.status === "valid_citation") {
-      validCitations += 1;
-    } else if (f.citation.status === "file_exists_no_line") {
-      fileOnlyCitations += 1;
-    } else {
-      invalidOrMissingCitations += 1;
-    }
-  }
+  const citationSummary = summarizeCitations(allFindings);
 
   return {
     summaries: {
@@ -438,12 +964,40 @@ export function synthesizeStructuredCrossReview({
       codex: codexParsed.error,
       claude: claudeParsed.error,
     },
-    citationSummary: {
-      totalFindings: allFindings.length,
-      validCitations,
-      fileOnlyCitations,
-      invalidOrMissingCitations,
-      note: "Mechanical check of file existence and line bounds only; semanticallyVerified is always false until the parent agent inspects the underlying code.",
+    citationSummary,
+    verificationStages: {
+      cliExecution: {
+        codex: codexExec,
+        claude: claudeExec,
+      },
+      structuredJsonParse: {
+        codex: {
+          attempted: codexParsed.attempted,
+          ok: Boolean(codexParsed.attempted && codexParsed.parsed && !codexParsed.error),
+          findingsCount: codexFindings.length,
+          error: codexParsed.error,
+        },
+        claude: {
+          attempted: claudeParsed.attempted,
+          ok: Boolean(claudeParsed.attempted && claudeParsed.parsed && !claudeParsed.error),
+          findingsCount: claudeFindings.length,
+          error: claudeParsed.error,
+        },
+      },
+      citationValidity: {
+        checked: Boolean(codexParsed.parsed || claudeParsed.parsed),
+        totalFindings: citationSummary.totalFindings,
+        validCitations: citationSummary.validCitations,
+        fileOnlyCitations: citationSummary.fileOnlyCitations,
+        invalidOrMissingCitations: citationSummary.invalidOrMissingCitations,
+        statusCounts: citationSummary.statusCounts,
+      },
+      semanticVerification: {
+        verified: false,
+        semanticallyVerified: false,
+        status: "pending_host_inspection",
+        note: "CLI exit=0, valid JSON schema, and valid file/line citation do NOT prove a finding is a real bug. The host agent or developer must inspect the cited code semantics.",
+      },
     },
   };
 }

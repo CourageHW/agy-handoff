@@ -17,6 +17,7 @@ import {
 } from "./context.mjs";
 import {
   STRUCTURED_REVIEW_SCHEMA,
+  buildStructuredSingleReview,
   synthesizeStructuredCrossReview,
 } from "./cross-review.mjs";
 import { VALID_TASK_TYPES, resolveAutoEngine } from "./routing.mjs";
@@ -25,6 +26,7 @@ import {
   terminateAllForegroundCommands,
   validateCwd,
   validateTimeoutSec,
+  validateWorkspaceWriteCwd,
 } from "./runners/common.mjs";
 import {
   buildCodexExecSpec,
@@ -35,6 +37,7 @@ import {
   runCodexReview,
 } from "./runners/codex.mjs";
 import {
+  WORKSPACE_WRITE_DISALLOWED_TOOLS,
   buildClaudeExecSpec,
   buildClaudeReviewSpec,
   findClaudeBinary,
@@ -846,8 +849,20 @@ export async function handleToolCall(
             ? runCodexReview({ ...effectiveArgs, onEvent })
             : runClaudeReview({ ...effectiveArgs, onEvent }),
       );
+      const structuredReview = args.structured
+        ? buildStructuredSingleReview({
+            engine: selectedEngine,
+            cliOk: Boolean(result.ok),
+            exitCode: result.exitCode,
+            cliError: result.ok ? null : result.stderr || result.output || null,
+            output: result.output,
+            structuredOutput: result.structuredOutput || null,
+            cwd: resolvedCwd,
+          })
+        : undefined;
       return {
         ...result,
+        ...(structuredReview ? { structuredReview } : {}),
         ...(routingDecision ? { routingDecision } : {}),
         ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
       };
@@ -856,8 +871,16 @@ export async function handleToolCall(
     case "handoff_delegate": {
       const { background = false } = args;
       const mode = args.mode || "read-only";
+      if (mode === "workspace-write" && args.sessionId === "last") {
+        throw new Error(
+          'Refusing to use sessionId="last" in workspace-write mode; pass an explicit session ID.',
+        );
+      }
       const timeoutSec = validateTimeoutSec(args.timeoutSec);
-      const resolvedCwd = validateCwd(args.cwd);
+      const resolvedCwd =
+        mode === "workspace-write"
+          ? validateWorkspaceWriteCwd(args.cwd)
+          : validateCwd(args.cwd);
       const ctx = normalizeAndFormatContext(args.context, resolvedCwd);
       const effectivePrompt = `${ctx.promptPrefix}${args.prompt}`;
       const skipGitRepoCheck =
@@ -888,6 +911,24 @@ export async function handleToolCall(
           ? selectedEngine === "codex"
             ? "os-sandbox (workspace-write)"
             : "restricted-file-tools + acceptEdits + unsandboxed-bash"
+          : undefined;
+      const permissionBoundary =
+        mode === "workspace-write"
+          ? {
+              mode: "workspace-write",
+              engine: selectedEngine,
+              requiresExplicitUserApproval: true,
+              osSandboxed: selectedEngine === "codex",
+              sandboxModel,
+              disallowedCommands:
+                selectedEngine === "claude"
+                  ? WORKSPACE_WRITE_DISALLOWED_TOOLS.split(",")
+                  : [],
+              warning:
+                selectedEngine === "claude"
+                  ? "Claude Code built-in file tools (Read/Edit/Write/Grep/Glob) are confined to cwd via --restricted, but Bash runs without an OS filesystem/network sandbox. Confirm observed workspaceGitDelta and executionEvidence."
+                  : "Codex runs inside an OS workspace-write sandbox confined to cwd. Confirm observed workspaceGitDelta and executionEvidence.",
+            }
           : undefined;
 
       const resolved = resolveEngineConfig("delegate", selectedEngine, {
@@ -938,6 +979,7 @@ export async function handleToolCall(
         return {
           ...started,
           ...(sandboxModel ? { sandboxModel } : {}),
+          ...(permissionBoundary ? { permissionBoundary } : {}),
           ...(routingDecision ? { routingDecision } : {}),
           ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
         };
@@ -965,6 +1007,7 @@ export async function handleToolCall(
       return {
         ...result,
         ...(sandboxModel ? { sandboxModel } : {}),
+        ...(permissionBoundary ? { permissionBoundary } : {}),
         ...(routingDecision ? { routingDecision } : {}),
         ...(ctx.metadata ? { handoffContext: ctx.metadata } : {}),
       };
@@ -1140,12 +1183,14 @@ export async function handleToolCall(
               !codexResult.skipped && codexResult.ok
                 ? codexResult.structuredOutput || null
                 : null,
+            codexStatus: codexResult,
             claudeOutput:
               !claudeResult.skipped && claudeResult.ok ? claudeResult.output : "",
             claudeStructured:
               !claudeResult.skipped && claudeResult.ok
                 ? claudeResult.structuredOutput || null
                 : null,
+            claudeStatus: claudeResult,
             cwd: resolvedCwd,
           });
         } catch (err) {

@@ -22,6 +22,7 @@ import {
   validateModelFlag,
   validateSessionId,
   validateTimeoutSec,
+  validateWorkspaceWriteCwd,
 } from "./common.mjs";
 import { createEventStreamParser } from "../events.mjs";
 
@@ -71,8 +72,30 @@ const READ_ONLY_DISALLOWED_TOOLS = [
 const WORKSPACE_WRITE_TOOLS = "Read,Edit,Write,Grep,Glob,Bash";
 export const WORKSPACE_WRITE_DISALLOWED_TOOLS = [
   "Bash(sudo *)",
+  "Bash(su *)",
+  "Bash(doas *)",
+  "Bash(pkexec *)",
   "Bash(git push)",
   "Bash(git push *)",
+  "Bash(git reset --hard*)",
+  "Bash(git clean -f*)",
+  "Bash(rm -rf /*)",
+  "Bash(rm -rf ~*)",
+  "Bash(rm -rf ..*)",
+  "Bash(cd /*)",
+  "Bash(cd ~*)",
+  "Bash(cd ..*)",
+  "Bash(mkfs*)",
+  "Bash(dd *)",
+  "Bash(shutdown*)",
+  "Bash(reboot*)",
+  "Bash(ssh *)",
+  "Bash(scp *)",
+  "Bash(curl *|*)",
+  "Bash(wget *|*)",
+  "Bash(npm publish*)",
+  "Bash(gh auth*)",
+  "Bash(gh repo delete*)",
 ].join(",");
 
 export function findClaudeBinary() {
@@ -208,7 +231,10 @@ export function buildClaudeExecSpec({
   }
   const validModel = validateModelFlag(model);
   const validSessionId = validateSessionId(sessionId);
-  const resolvedCwd = validateCwd(cwd);
+  const resolvedCwd =
+    mode === "workspace-write"
+      ? validateWorkspaceWriteCwd(cwd)
+      : validateCwd(cwd);
 
   const args = [
     "-p",

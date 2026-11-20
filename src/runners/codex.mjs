@@ -24,6 +24,7 @@ import {
   validateModelFlag,
   validateSessionId,
   validateTimeoutSec,
+  validateWorkspaceWriteCwd,
 } from "./common.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "../events.mjs";
 import { parseStructuredReviewPayload } from "../cross-review.mjs";
@@ -285,7 +286,15 @@ export function buildCodexExecSpec({
   validateCodexEffort(effort);
   const validModel = validateModelFlag(model);
   const validSessionId = validateSessionId(sessionId);
-  const resolvedCwd = validateCwd(cwd);
+  if (mode === "workspace-write" && validSessionId === "last") {
+    throw new Error(
+      'Refusing to use sessionId="last" in workspace-write mode; pass an explicit session ID.',
+    );
+  }
+  const resolvedCwd =
+    mode === "workspace-write"
+      ? validateWorkspaceWriteCwd(cwd)
+      : validateCwd(cwd);
 
   const args = ["exec"];
   if (validSessionId) {

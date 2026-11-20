@@ -13,7 +13,10 @@ import {
 import { parseClaudeJsonOutput } from "./runners/claude.mjs";
 import { extractCodexSessionId } from "./runners/codex.mjs";
 import { createEventStreamParser, parseCodexJsonlOutput } from "./events.mjs";
-import { parseStructuredReviewPayload } from "./cross-review.mjs";
+import {
+  buildStructuredSingleReview,
+  parseStructuredReviewPayload,
+} from "./cross-review.mjs";
 import {
   captureGitDirtySnapshot,
   computeGitDelta,
@@ -1212,6 +1215,20 @@ export class JobManager {
       output = rawStderr;
     }
 
+    let structuredReview;
+    if (meta.structured) {
+      structuredReview = buildStructuredSingleReview({
+        engine: meta.engine,
+        cliOk: meta.status === "completed",
+        exitCode: meta.exitCode,
+        cliError:
+          meta.status === "completed" ? null : meta.error || rawStderr || null,
+        output,
+        structuredOutput,
+        cwd: meta.cwd,
+      });
+    }
+
     return {
       jobId: meta.id,
       engine: meta.engine,
@@ -1221,6 +1238,7 @@ export class JobManager {
       retryOf: meta.retryOf || null,
       structured: Boolean(meta.structured),
       structuredOutput,
+      ...(structuredReview ? { structuredReview } : {}),
       handoffContext: meta.handoffContext || null,
       executionEvidence: meta.executionEvidence || null,
       status: meta.status,

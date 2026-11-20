@@ -13,10 +13,14 @@ import {
 } from "../src/context.mjs";
 import {
   STRUCTURED_REVIEW_SCHEMA,
+  buildStructuredSingleReview,
   parseStructuredReviewPayload,
   synthesizeStructuredCrossReview,
   verifyFindingCitation,
 } from "../src/cross-review.mjs";
+import { validateWorkspaceWriteCwd } from "../src/runners/common.mjs";
+import { buildCodexExecSpec } from "../src/runners/codex.mjs";
+import { buildClaudeExecSpec } from "../src/runners/claude.mjs";
 import { parseCodexJsonLine, parseClaudeStreamJsonLine } from "../src/events.mjs";
 import { resolveAutoEngine } from "../src/routing.mjs";
 import { JobManager } from "../src/jobs.mjs";
@@ -250,6 +254,8 @@ test("verifyFindingCitation and synthesizeStructuredCrossReview check trailing n
     });
 
     assert.equal(synthesis.consensus.length, 1);
+    assert.ok(synthesis.consensus[0].matchBasis.sharedTokens.includes("empty"));
+    assert.ok(synthesis.consensus[0].matchBasis.sharedTokens.includes("token"));
     assert.equal(synthesis.conflicts.length, 1);
     assert.equal(synthesis.conflicts[0].codexSeverity, "critical");
     assert.equal(synthesis.conflicts[0].claudeSeverity, "high");
@@ -258,10 +264,136 @@ test("verifyFindingCitation and synthesizeStructuredCrossReview check trailing n
     assert.equal(synthesis.uniqueClaude.length, 1);
     assert.equal(synthesis.citationSummary.validCitations, 3);
     assert.equal(synthesis.citationSummary.invalidOrMissingCitations, 1);
+    assert.equal(synthesis.verificationStages.cliExecution.codex.ok, true);
+    assert.equal(synthesis.verificationStages.structuredJsonParse.codex.ok, true);
+    assert.equal(synthesis.verificationStages.citationValidity.validCitations, 3);
+    assert.equal(synthesis.verificationStages.semanticVerification.verified, false);
+    assert.equal(synthesis.verificationStages.semanticVerification.semanticallyVerified, false);
+
+    // Distinct bugs on the exact same/adjacent lines MUST NOT be merged into consensus
+    const distinctNearby = synthesizeStructuredCrossReview({
+      codexStructured: {
+        summary: "Codex finding",
+        findings: [
+          {
+            severity: "high",
+            file: "auth.mjs",
+            line: 2,
+            title: "SQL injection in raw query interpolation",
+            detail: "User input concatenated directly into SQL query string",
+            fix: "Use parameterized prepared statements",
+          },
+        ],
+      },
+      claudeStructured: {
+        summary: "Claude finding",
+        findings: [
+          {
+            severity: "medium",
+            file: "auth.mjs",
+            line: 2,
+            title: "Unclosed file descriptor leak on early return",
+            detail: "File handle opened with fs.openSync is never closed in finally block",
+            fix: "Wrap descriptor usage in try/finally with fs.closeSync",
+          },
+        ],
+      },
+      cwd: dir,
+    });
+    assert.equal(distinctNearby.consensus.length, 0);
+    assert.equal(distinctNearby.conflicts.length, 0);
+    assert.equal(distinctNearby.uniqueCodex.length, 1);
+    assert.equal(distinctNearby.uniqueClaude.length, 1);
+
+    // Explicit separation of CLI execution success vs Structured JSON parse failure
+    const singleParseFail = buildStructuredSingleReview({
+      engine: "codex",
+      cliOk: true,
+      exitCode: 0,
+      output: "Non-JSON plain text review output",
+      cwd: dir,
+    });
+    assert.equal(singleParseFail.verificationStages.cliExecution.ok, true);
+    assert.equal(singleParseFail.verificationStages.structuredJsonParse.ok, false);
+    assert.match(singleParseFail.parseError, /Failed to parse JSON/i);
+    assert.equal(singleParseFail.verificationStages.citationValidity.checked, false);
+    assert.equal(singleParseFail.verificationStages.semanticVerification.semanticallyVerified, false);
+
+    // Schema violation inside valid JSON (invalid severity enum) fails structuredJsonParse
+    const invalidSchemaJson = parseStructuredReviewPayload({
+      summary: "ok",
+      findings: [
+        {
+          severity: "urgent",
+          file: "auth.mjs",
+          line: 1,
+          title: "Bad severity",
+          detail: "d",
+          fix: "f",
+        },
+      ],
+    });
+    assert.equal(invalidSchemaJson.parsed, null);
+    assert.match(invalidSchemaJson.error, /invalid severity/i);
   } finally {
     fs.rmSync(dir, RM_OPTS);
     fs.rmSync(linkBase, RM_OPTS);
   }
+});
+
+test("workspace-write boundary blocks root/home/system directories, sessionId='last', and flags suspicious external shell commands", () => {
+  const rootDir = path.parse(process.cwd()).root;
+  assert.throws(
+    () => validateWorkspaceWriteCwd(rootDir),
+    /Refusing workspace-write in filesystem root/i,
+  );
+  assert.throws(
+    () => validateWorkspaceWriteCwd(os.homedir()),
+    /Refusing workspace-write directly in the user home directory/i,
+  );
+  if (process.platform !== "win32" && fs.existsSync("/etc")) {
+    assert.throws(
+      () => validateWorkspaceWriteCwd("/etc"),
+      /Refusing workspace-write in protected system directory/i,
+    );
+  }
+  assert.throws(
+    () =>
+      buildCodexExecSpec({
+        prompt: "Apply fix",
+        cwd: os.tmpdir(),
+        mode: "workspace-write",
+        sessionId: "last",
+      }),
+    /Refusing to use sessionId="last" in workspace-write mode/i,
+  );
+  assert.throws(
+    () =>
+      buildClaudeExecSpec({
+        prompt: "Apply fix",
+        cwd: os.homedir(),
+        mode: "workspace-write",
+      }),
+    /Refusing workspace-write directly in the user home directory/i,
+  );
+
+  const tracker = createExecutionEvidenceTracker({
+    action: "delegate",
+    mode: "workspace-write",
+    jsonStream: true,
+  });
+  for (const ev of parseCodexJsonLine(
+    JSON.stringify({
+      type: "item.started",
+      item: { id: "cmd_1", type: "command_execution", command: "cat /etc/passwd" },
+    }),
+  )) {
+    tracker.recordEvent(ev);
+  }
+  const evidence = tracker.finalize({ ok: true });
+  assert.ok(
+    evidence.warnings.some((w) => /referencing paths outside the workspace/i.test(w)),
+  );
 });
 
 test("resolveAutoEngine respects workspace-write sandbox guard, effort/model constraints, compatibility, and failure streaks", async () => {

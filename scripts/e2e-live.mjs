@@ -426,6 +426,19 @@ async function main() {
           `Structured parse error: ${JSON.stringify(res.structuredSynthesis.parseErrors)}`,
         );
       }
+      const stages = res.structuredSynthesis.verificationStages;
+      if (
+        !stages?.cliExecution?.codex?.ok ||
+        !stages?.cliExecution?.claude?.ok ||
+        !stages?.structuredJsonParse?.codex?.ok ||
+        !stages?.structuredJsonParse?.claude?.ok ||
+        !stages?.citationValidity?.checked ||
+        stages?.semanticVerification?.semanticallyVerified !== false
+      ) {
+        throw new Error(
+          `Expected 4-stage verificationStages separation: ${JSON.stringify(stages)}`,
+        );
+      }
       return {
         detail: `consensus=${res.structuredSynthesis.consensus.length}, citations=${res.structuredSynthesis.citationSummary.validCitations}/${res.structuredSynthesis.citationSummary.totalFindings}`,
       };

@@ -9,7 +9,7 @@
 - **의존성 제로 (Zero-dependency)**: Node.js (`>= 18.18.0`) 내장 모듈만으로 동작해 설치 즉시 실행됩니다.
 - **Context-Aware Handoff**: `context: { files, summary, constraints, acceptanceCriteria }` (CLI `--files`, `--context-summary`)로 대상 파일과 기존 분석 결과를 넘겨 불필요한 전체 저장소 재탐색을 줄입니다.
 - **실행 증거 검증 (`executionEvidence`)**: 모든 실행에서 실제 관측된 도구 호출 수, 명령어, 조회/수정 파일, `workspace-write` 전후 `git status` 변화량(`workspaceGitDelta`)과 경고를 기록해 허위/빈 완료 보고를 잡아냅니다.
-- **구조화 교차 리뷰 (`structured: true`)**: Codex (`--output-schema`)와 Claude (`--json-schema`)에서 JSON 형식 리뷰를 받아 **합의(Consensus) · 심각도 충돌(Conflicts) · 단독 지적(Unique)**으로 분류하고, 파일 존재·경로 경계·라인 번호를 기계적으로 검증합니다(`semanticallyVerified: false` 유지, 최종 의미 검증은 상위 에이전트 수행).
+- **구조화 교차 리뷰 (`structured: true`)**: Codex (`--output-schema`)와 Claude (`--json-schema`)에서 JSON 형식 리뷰를 받아 파일·라인 근접성뿐 아니라 결함 키워드·개념 일치(`matchBasis`)를 함께 검증해 **합의(Consensus) · 심각도 충돌(Conflicts) · 단독 지적(Unique)**으로 분류합니다. 또한 `verificationStages`를 통해 **① CLI 실행 성공(`cliExecution`) · ② JSON 스키마 파싱 성공(`structuredJsonParse`) · ③ 파일·라인 인용 유효성(`citationValidity`) · ④ 의미 검증(`semanticVerification: { semanticallyVerified: false }`)** 4단계를 명확히 분리합니다.
 - **안전한 Read-only 재시도 & 선택적 정책 라우팅**: `handoff_doctor`가 비정상 종료된 잔존 잡을 정리하고, `handoff_job_retry`로 실패/타임아웃된 `read-only` 잡만 동일/대체 엔진으로 안전하게 재실행(`workspace-write`는 거부)합니다. 또한 `engine: "auto"` 선택 시 CLI 호환성, 연속 실패 회피, 최근 20건 사용량 균형을 투명하게 적용합니다.
 - **실시간 가시성 & 시각 통계 (`Alt+J` / `watch` / `stats --table`)**: 격리된 `codex-handoff` · `claude-handoff` 서브에이전트 패널과 터미널 `watch`, `stats --table` 막대 그래프 요약을 제공합니다.
 
@@ -51,9 +51,10 @@ node src/cli.mjs stats --table
 | 모드 | OpenAI Codex (`codex`) | Anthropic Claude Code (`claude`) |
 | :--- | :--- | :--- |
 | **`read-only`** *(기본값)* | `-s read-only` (네이티브 `review`/`resume` 포함 `sandbox_mode="read-only"`). OS 수준의 읽기 전용 샌드박스 강제. | `--permission-mode dontAsk --restricted --strict-mcp-config --permission-prompts none --tools Read,Grep,Glob,Bash` + 읽기 전용 `git` 허용 및 `Edit`/`Write`/`NotebookEdit`/쓰기성 `git` 옵션(`--output*`, `--ext-diff*`, `--textconv*`) 차단. |
-| **`workspace-write`** *(명시적 승인 시)* | `-s workspace-write` (`cwd` 범위 OS 쓰기 샌드박스 + 네트워크 제한). | `--permission-mode acceptEdits --restricted --strict-mcp-config --tools Read,Edit,Write,Grep,Glob,Bash` + `Bash(sudo *)`, `Bash(git push*)` 차단. 기본 파일 도구(`Read`/`Edit`/`Write`/`Grep`/`Glob`)는 `cwd` 내부에 격리되지만, **`Bash` 자체는 OS 파일시스템/네트워크 샌드박스가 적용되지 않음**. |
+| **`workspace-write`** *(명시적 승인 시)* | `-s workspace-write` (`cwd` 범위 OS 쓰기 샌드박스 + 네트워크 제한). `sessionId="last"` 및 루트/홈/시스템 디렉터리 차단. | `--permission-mode acceptEdits --restricted --strict-mcp-config --tools Read,Edit,Write,Grep,Glob,Bash` + 권한 상승(`sudo`, `su`, `doas`, `pkexec`), 원격/파괴적 git(`git push*`, `git reset --hard*`, `git clean -f*`), 상위/루트 경로 이탈(`rm -rf /*`, `rm -rf ~*`, `rm -rf ..*`, `cd /*`, `cd ~*`, `cd ..*`) 등 위험 명령 차단. 기본 파일 도구는 `cwd` 내부에 격리되지만, **`Bash` 자체는 OS 파일시스템/네트워크 샌드박스가 적용되지 않음**. |
 
-- `handoff_job_retry`는 `read-only` 잡만 재실행할 수 있으며 `workspace-write` 잡은 항상 거부합니다.
+- `validateWorkspaceWriteCwd`가 루트(`/`), OS 시스템 폴더(`/etc`, `/usr`, `C:\Windows` 등), 사용자 홈 루트(`~`), 민감 인증/설정 폴더(`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.claude`, `~/.codex`, `~/.gemini`)에 대한 `workspace-write` 실행을 원천 차단합니다.
+- `engine: "auto"`는 `workspace-write` 시 기본적으로 OS 샌드박스가 있는 Codex만 선택하며, `handoff_job_retry`는 `read-only` 잡만 재실행하고 `workspace-write` 잡은 항상 거부합니다.
 
 ---
 

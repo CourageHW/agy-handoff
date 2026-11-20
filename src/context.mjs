@@ -403,6 +403,18 @@ export function createExecutionEvidenceTracker({
         "No file modifications were observed during this workspace-write run; verify the workspace before treating edits as applied.",
       );
     }
+    if (mode === "workspace-write" && commandsExecuted.length > 0) {
+      const suspiciousCmd = commandsExecuted.find((cmd) =>
+        /(?:^|\s)(?:\.\.\/|~\/|\/etc\/|\/usr\/|\/bin\/|\/root\/|\$HOME\/\.ssh|\$HOME\/\.aws|\$HOME\/\.gnupg)/.test(
+          cmd,
+        ),
+      );
+      if (suspiciousCmd) {
+        warnings.push(
+          `Observed shell command referencing paths outside the workspace in workspace-write mode (${compactText(suspiciousCmd, 100)}); audit workspace and system state.`,
+        );
+      }
+    }
     const confirmedReviewActivity =
       pendingById.size === 0 ? succeededToolCalls : observedToolCalls - failedToolCalls;
     if (jsonStream && ok && action === "review" && confirmedReviewActivity <= 0) {

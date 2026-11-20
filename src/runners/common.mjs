@@ -24,6 +24,123 @@ export function validateCwd(cwd) {
   return resolved;
 }
 
+const BLOCKED_UNIX_WRITE_ROOTS = [
+  "/etc",
+  "/usr",
+  "/bin",
+  "/sbin",
+  "/lib",
+  "/lib64",
+  "/boot",
+  "/dev",
+  "/proc",
+  "/sys",
+  "/System",
+];
+
+const BLOCKED_HOME_SUBDIRS = [
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".kube",
+  ".docker",
+  ".claude",
+  ".codex",
+  ".gemini",
+];
+
+function isSameOrSubpath(parentDir, candidateDir) {
+  const rel = path.relative(parentDir, candidateDir);
+  return (
+    rel === "" ||
+    (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel))
+  );
+}
+
+export function validateWorkspaceWriteCwd(cwd) {
+  const resolved = validateCwd(cwd);
+  let real = resolved;
+  try {
+    real = fs.realpathSync(resolved);
+  } catch {
+    // keep resolved
+  }
+
+  for (const target of [resolved, real]) {
+    const parsedRoot = path.parse(target).root;
+    if (target === parsedRoot) {
+      throw new Error(
+        `Refusing workspace-write in filesystem root "${target}". Specify a scoped project directory.`,
+      );
+    }
+
+    if (process.platform === "win32") {
+      const lower = target.toLowerCase();
+      const winRoot = (process.env.SystemRoot || "C:\\Windows").toLowerCase();
+      if (
+        lower === winRoot ||
+        lower.startsWith(`${winRoot}\\`) ||
+        lower === "c:\\program files" ||
+        lower.startsWith("c:\\program files\\") ||
+        lower === "c:\\program files (x86)" ||
+        lower.startsWith("c:\\program files (x86)\\")
+      ) {
+        throw new Error(
+          `Refusing workspace-write in protected system directory "${target}".`,
+        );
+      }
+    } else {
+      for (const sysRoot of BLOCKED_UNIX_WRITE_ROOTS) {
+        let sysReal = sysRoot;
+        try {
+          if (fs.existsSync(sysRoot)) {
+            sysReal = fs.realpathSync(sysRoot);
+          }
+        } catch {
+          // ignore
+        }
+        if (
+          isSameOrSubpath(sysRoot, target) ||
+          isSameOrSubpath(sysReal, target)
+        ) {
+          throw new Error(
+            `Refusing workspace-write in protected system directory "${target}".`,
+          );
+        }
+      }
+    }
+  }
+
+  let homeDir = os.homedir();
+  let homeReal = homeDir;
+  try {
+    homeReal = fs.realpathSync(homeDir);
+  } catch {
+    // ignore
+  }
+
+  if (resolved === homeDir || real === homeReal) {
+    throw new Error(
+      `Refusing workspace-write directly in the user home directory "${resolved}". Specify a project subdirectory.`,
+    );
+  }
+
+  for (const sub of BLOCKED_HOME_SUBDIRS) {
+    const blockedNom = path.join(homeDir, sub);
+    const blockedReal = path.join(homeReal, sub);
+    if (
+      isSameOrSubpath(blockedNom, resolved) ||
+      isSameOrSubpath(blockedReal, real)
+    ) {
+      throw new Error(
+        `Refusing workspace-write inside sensitive home configuration/credential directory "${resolved}".`,
+      );
+    }
+  }
+
+  return resolved;
+}
+
 export function isInsideGitRepo(dir) {
   let current = path.resolve(dir || process.cwd());
   while (true) {
