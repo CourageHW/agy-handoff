@@ -1,0 +1,201 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 560" width="100%" height="100%">
+  <style>
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 13px; }
+    .mono-sm { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: 11.8px; }
+    .sans { font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .scene1, .scene2, .scene3, .scene4 { opacity: 0; }
+    .tab1, .tab2, .tab3, .tab4 { fill: #1e293b; }
+    .scene1 { animation: showScene1 20s infinite; }
+    .scene2 { animation: showScene2 20s infinite; }
+    .scene3 { animation: showScene3 20s infinite; }
+    .scene4 { animation: showScene4 20s infinite; }
+    .tab1 { animation: activeTab1 20s infinite; }
+    .tab2 { animation: activeTab2 20s infinite; }
+    .tab3 { animation: activeTab3 20s infinite; }
+    .tab4 { animation: activeTab4 20s infinite; }
+    .progress { animation: progressAnim 20s linear infinite; }
+
+    @keyframes showScene1 {
+      0%, 23% { opacity: 1; }
+      25%, 100% { opacity: 0; }
+    }
+    @keyframes showScene2 {
+      0%, 24% { opacity: 0; }
+      26%, 48% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+    @keyframes showScene3 {
+      0%, 49% { opacity: 0; }
+      51%, 73% { opacity: 1; }
+      75%, 100% { opacity: 0; }
+    }
+    @keyframes showScene4 {
+      0%, 74% { opacity: 0; }
+      76%, 98% { opacity: 1; }
+      100% { opacity: 0; }
+    }
+    @keyframes activeTab1 {
+      0%, 24% { fill: #0284c7; }
+      25%, 100% { fill: #1e293b; }
+    }
+    @keyframes activeTab2 {
+      0%, 24% { fill: #1e293b; }
+      25%, 49% { fill: #0284c7; }
+      50%, 100% { fill: #1e293b; }
+    }
+    @keyframes activeTab3 {
+      0%, 49% { fill: #1e293b; }
+      50%, 74% { fill: #0284c7; }
+      75%, 100% { fill: #1e293b; }
+    }
+    @keyframes activeTab4 {
+      0%, 74% { fill: #1e293b; }
+      75%, 99% { fill: #0284c7; }
+      100% { fill: #1e293b; }
+    }
+    @keyframes progressAnim {
+      0% { width: 0px; }
+      100% { width: 980px; }
+    }
+  </style>
+
+  <!-- Terminal Window Frame -->
+  <rect width="980" height="560" rx="14" fill="#0b0f19" stroke="#334155" stroke-width="2"/>
+  <rect width="980" height="44" rx="14" fill="#161f33"/>
+  <rect y="30" width="980" height="14" fill="#161f33"/>
+
+  <!-- Window Traffic Lights -->
+  <circle cx="24" cy="22" r="6.5" fill="#ef4444"/>
+  <circle cx="44" cy="22" r="6.5" fill="#f59e0b"/>
+  <circle cx="64" cy="22" r="6.5" fill="#10b981"/>
+
+  <!-- Scene Tabs in Titlebar -->
+  <rect class="tab1" x="105" y="9" width="205" height="26" rx="6"/>
+  <text class="sans" x="207" y="26" text-anchor="middle" fill="#f8fafc" font-size="11.5" font-weight="600">1. Antigravity Subagents (Alt+J)</text>
+
+  <rect class="tab2" x="318" y="9" width="225" height="26" rx="6"/>
+  <text class="sans" x="430" y="26" text-anchor="middle" fill="#f8fafc" font-size="11.5" font-weight="600">2. 4-Stage Verified Cross-Review</text>
+
+  <rect class="tab3" x="551" y="9" width="205" height="26" rx="6"/>
+  <text class="sans" x="653" y="26" text-anchor="middle" fill="#f8fafc" font-size="11.5" font-weight="600">3. Live Watch &amp; Usage Stats</text>
+
+  <rect class="tab4" x="764" y="9" width="198" height="26" rx="6"/>
+  <text class="sans" x="863" y="26" text-anchor="middle" fill="#f8fafc" font-size="11.5" font-weight="600">4. Quick Install &amp; Doctor</text>
+
+  <!-- Timeline progress bar -->
+  <rect x="0" y="43" width="980" height="2" fill="#1e293b"/>
+  <rect class="progress" x="0" y="43" width="980" height="2" fill="#38bdf8"/>
+
+  <!-- ==================== SCENE 1: Antigravity Subagent Panes ==================== -->
+  <g class="scene1">
+    <text class="mono" x="28" y="80" fill="#38bdf8" font-weight="700">agy&gt;</text>
+    <text class="mono" x="70" y="80" fill="#f8fafc">/agy-handoff:handoff-cross-review Review uncommitted changes in src/cross-review.mjs and src/jobs.mjs</text>
+
+    <text class="mono" x="28" y="112" fill="#94a3b8">Launching parallel read-only cross-review subagents with scoped context (2 files)...</text>
+
+    <!-- Subagent Pane 1 -->
+    <rect x="28" y="132" width="924" height="156" rx="10" fill="#111827" stroke="#10b981" stroke-width="1.5"/>
+    <circle cx="48" cy="156" r="5.5" fill="#10b981"/>
+    <text class="mono" x="64" y="160" fill="#f8fafc" font-weight="700">Agent(codex-handoff: gpt-6.2-sol high review)</text>
+    <text class="mono-sm" x="735" y="160" fill="#34d399">jobId: codex-mwp4fwse · RUNNING</text>
+    <text class="mono-sm" x="48" y="188" fill="#cbd5e1">  ├─ [seq 1] Session started (sandbox: read-only, --output-schema enabled)</text>
+    <text class="mono-sm" x="48" y="210" fill="#cbd5e1">  ├─ [seq 2] Run: git status --short &amp;&amp; git diff -- src/cross-review.mjs src/jobs.mjs</text>
+    <text class="mono-sm" x="48" y="232" fill="#cbd5e1">  ├─ [seq 3] Done: git diff (exit 0) · inspected 2 scoped files</text>
+    <text class="mono-sm" x="48" y="254" fill="#6ee7b7">  └─ [seq 4] Emitting structured JSON review findings (2 findings)...</text>
+
+    <!-- Subagent Pane 2 -->
+    <rect x="28" y="304" width="924" height="156" rx="10" fill="#111827" stroke="#f59e0b" stroke-width="1.5"/>
+    <circle cx="48" cy="328" r="5.5" fill="#f59e0b"/>
+    <text class="mono" x="64" y="332" fill="#f8fafc" font-weight="700">Agent(claude-handoff: claude-opus-5-5 high review)</text>
+    <text class="mono-sm" x="735" y="332" fill="#fbbf24">jobId: claude-mwp4fwj9 · RUNNING</text>
+    <text class="mono-sm" x="48" y="360" fill="#cbd5e1">  ├─ [seq 1] Session started (--restricted --strict-mcp-config --permission-mode dontAsk)</text>
+    <text class="mono-sm" x="48" y="382" fill="#cbd5e1">  ├─ [seq 2] Tool: Read (src/cross-review.mjs) -&gt; tool_result (ok)</text>
+    <text class="mono-sm" x="48" y="404" fill="#cbd5e1">  ├─ [seq 3] Tool: Read (src/jobs.mjs) -&gt; tool_result (ok)</text>
+    <text class="mono-sm" x="48" y="426" fill="#fcd34d">  └─ [seq 4] Synthesizing schema-validated findings (--json-schema)...</text>
+
+    <rect x="28" y="478" width="924" height="54" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+    <text class="mono-sm" x="44" y="501" fill="#38bdf8">TIP: Press Alt+J (/agents) in Antigravity CLI to inspect subagent panes, or run in another terminal:</text>
+    <text class="mono-sm" x="44" y="520" fill="#e2e8f0">$ node ~/.gemini/config/plugins/agy-handoff/src/cli.mjs watch</text>
+  </g>
+
+  <!-- ==================== SCENE 2: 4-Stage Verified Cross-Review ==================== -->
+  <g class="scene2">
+    <text class="mono" x="28" y="78" fill="#10b981" font-weight="700">$ node src/cli.mjs cross-review --style adversarial --scope uncommitted --files src/auth.mjs --structured</text>
+
+    <rect x="28" y="96" width="924" height="436" rx="10" fill="#111827" stroke="#1e293b" stroke-width="1.5"/>
+    <text class="mono-sm" x="44" y="120" fill="#e2e8f0">{</text>
+    <text class="mono-sm" x="44" y="140" fill="#93c5fd">  "ok": <tspan fill="#34d399">true</tspan>,  "summary": { "enginesAttempted": 2, "enginesSucceeded": 2 },</text>
+    <text class="mono-sm" x="44" y="160" fill="#93c5fd">  "structuredSynthesis": {</text>
+    <text class="mono-sm" x="44" y="180" fill="#38bdf8">    "consensus": [</text>
+    <text class="mono-sm" x="44" y="200" fill="#e2e8f0">      {</text>
+    <text class="mono-sm" x="44" y="219" fill="#e2e8f0">        "file": <tspan fill="#fcd34d">"src/auth.mjs"</tspan>, "line": <tspan fill="#34d399">42</tspan>, "severityMatch": <tspan fill="#f87171">false</tspan>,</text>
+    <text class="mono-sm" x="44" y="238" fill="#e2e8f0">        "matchBasis": { "lineDistance": 1, "sharedTokens": [<tspan fill="#fcd34d">"empty"</tspan>, <tspan fill="#fcd34d">"token"</tspan>], "sharedConcepts": [<tspan fill="#fcd34d">"null_or_empty"</tspan>, <tspan fill="#fcd34d">"auth_or_permission"</tspan>] },</text>
+    <text class="mono-sm" x="44" y="257" fill="#e2e8f0">        "codex":  { "severity": <tspan fill="#f87171">"critical"</tspan>, "title": <tspan fill="#a7f3d0">"Bypass on empty token"</tspan>, "citation": { "status": <tspan fill="#34d399">"valid_citation"</tspan> } },</text>
+    <text class="mono-sm" x="44" y="276" fill="#e2e8f0">        "claude": { "severity": <tspan fill="#fbbf24">"high"</tspan>,     "title": <tspan fill="#fde68a">"Broken auth check on empty token"</tspan>, "citation": { "status": <tspan fill="#34d399">"valid_citation"</tspan> } }</text>
+    <text class="mono-sm" x="44" y="295" fill="#e2e8f0">      }</text>
+    <text class="mono-sm" x="44" y="314" fill="#38bdf8">    ],</text>
+    <text class="mono-sm" x="44" y="334" fill="#a78bfa">    "verificationStages": {</text>
+    <text class="mono-sm" x="44" y="354" fill="#e2e8f0">      "cliExecution":        { "codex": { "ok": <tspan fill="#34d399">true</tspan>, "exitCode": 0 }, "claude": { "ok": <tspan fill="#34d399">true</tspan>, "exitCode": 0 } },</text>
+    <text class="mono-sm" x="44" y="374" fill="#e2e8f0">      "structuredJsonParse": { "codex": { "ok": <tspan fill="#34d399">true</tspan>, "findingsCount": 2 }, "claude": { "ok": <tspan fill="#34d399">true</tspan>, "findingsCount": 2 } },</text>
+    <text class="mono-sm" x="44" y="394" fill="#e2e8f0">      "citationValidity":    { "checked": <tspan fill="#34d399">true</tspan>, "validCitations": <tspan fill="#34d399">4</tspan>, "invalidOrMissingCitations": <tspan fill="#34d399">0</tspan> },</text>
+    <text class="mono-sm" x="44" y="414" fill="#e2e8f0">      "semanticVerification": {</text>
+    <text class="mono-sm" x="44" y="434" fill="#fbbf24">        "semanticallyVerified": false, "status": "pending_host_inspection",</text>
+    <text class="mono-sm" x="44" y="454" fill="#94a3b8">        "note": "CLI exit=0, JSON schema, and valid file/line do NOT prove the bug is real. Inspect cited code."</text>
+    <text class="mono-sm" x="44" y="474" fill="#e2e8f0">      }</text>
+    <text class="mono-sm" x="44" y="494" fill="#a78bfa">    }</text>
+    <text class="mono-sm" x="44" y="514" fill="#e2e8f0">  }</text>
+  </g>
+
+  <!-- ==================== SCENE 3: Live Watch & Stats Table ==================== -->
+  <g class="scene3">
+    <text class="mono" x="28" y="78" fill="#10b981" font-weight="700">$ node src/cli.mjs stats --table</text>
+
+    <rect x="28" y="94" width="924" height="236" rx="10" fill="#111827" stroke="#1e293b" stroke-width="1.5"/>
+    <text class="mono-sm" x="44" y="120" fill="#38bdf8" font-weight="700">agy-handoff usage &amp; performance stats (~/.gemini/antigravity-cli/plugin_data/agy-handoff/jobs)</text>
+    <text class="mono-sm" x="44" y="138" fill="#64748b">========================================================================</text>
+    <text class="mono-sm" x="44" y="158" fill="#f8fafc">Jobs: 12 analyzed (12 retained) | Finished: 12 | Success rate: <tspan fill="#34d399" font-weight="700">100%</tspan></text>
+    <text class="mono-sm" x="44" y="176" fill="#94a3b8">Status breakdown: completed=12, failed=0, timed_out=0, canceled=0, running=0</text>
+    <text class="mono-sm" x="44" y="202" fill="#e2e8f0" font-weight="700">By Engine:</text>
+    <text class="mono-sm" x="44" y="222" fill="#34d399">  codex   [##########----------]  50.0% | total=6 ok=6 fail=0 timeout=0 | avg=24.8s</text>
+    <text class="mono-sm" x="44" y="242" fill="#fbbf24">  claude  [##########----------]  50.0% | total=6 ok=6 fail=0 timeout=0 | avg=18.4s</text>
+    <text class="mono-sm" x="44" y="268" fill="#e2e8f0" font-weight="700">By Model:</text>
+    <text class="mono-sm" x="44" y="288" fill="#cbd5e1">  codex/gpt-6.2-sol            total=6 ok=6 fail=0 timeout=0 avg=24.8s</text>
+    <text class="mono-sm" x="44" y="308" fill="#cbd5e1">  claude/claude-opus-5-5       total=6 ok=6 fail=0 timeout=0 avg=18.4s</text>
+
+    <text class="mono" x="28" y="362" fill="#10b981" font-weight="700">$ node src/cli.mjs review --engine auto --task-type review --files src/routing.mjs</text>
+    <rect x="28" y="378" width="924" height="152" rx="10" fill="#111827" stroke="#1e293b" stroke-width="1.5"/>
+    <text class="mono-sm" x="44" y="404" fill="#93c5fd">  "routingDecision": {</text>
+    <text class="mono-sm" x="44" y="424" fill="#e2e8f0">    "selectedEngine": <tspan fill="#34d399">"claude"</tspan>, "policy": <tspan fill="#fcd34d">"balanced"</tspan>, "taskType": <tspan fill="#fcd34d">"review"</tspan>,</text>
+    <text class="mono-sm" x="44" y="444" fill="#e2e8f0">    "reason": <tspan fill="#a7f3d0">"Balanced routing selected least-used engine in last 20 jobs (codex=6, claude=5)."</tspan></text>
+    <text class="mono-sm" x="44" y="464" fill="#93c5fd">  },</text>
+    <text class="mono-sm" x="44" y="484" fill="#93c5fd">  "executionEvidence": {</text>
+    <text class="mono-sm" x="44" y="504" fill="#e2e8f0">    "observedToolCalls": 2, "succeededToolCalls": 2, "filesInspected": [<tspan fill="#fcd34d">"src/routing.mjs"</tspan>], "warnings": []</text>
+    <text class="mono-sm" x="44" y="522" fill="#93c5fd">  }</text>
+  </g>
+
+  <!-- ==================== SCENE 4: Install & Doctor ==================== -->
+  <g class="scene4">
+    <text class="mono" x="28" y="78" fill="#10b981" font-weight="700">$ agy plugin install https://github.com/CourageHW/agy-handoff</text>
+    <rect x="28" y="92" width="924" height="114" rx="10" fill="#111827" stroke="#10b981" stroke-width="1.2"/>
+    <text class="mono-sm" x="44" y="116" fill="#34d399">  [ok]    agy-handoff (0.2.0)</text>
+    <text class="mono-sm" x="44" y="136" fill="#e2e8f0">          ✔ skills      : 5 installed (handoff-cross-review, handoff-delegate, handoff-doctor, handoff-models, handoff-review)</text>
+    <text class="mono-sm" x="44" y="156" fill="#e2e8f0">          ✔ agents      : 2 installed (claude-handoff, codex-handoff)</text>
+    <text class="mono-sm" x="44" y="176" fill="#e2e8f0">          ✔ rules       : 1 installed (AGENTS)</text>
+    <text class="mono-sm" x="44" y="196" fill="#e2e8f0">          ✔ mcpServers  : 1 installed (handoff)</text>
+
+    <text class="mono" x="28" y="240" fill="#10b981" font-weight="700">$ node src/cli.mjs doctor</text>
+    <rect x="28" y="254" width="924" height="276" rx="10" fill="#111827" stroke="#1e293b" stroke-width="1.5"/>
+    <text class="mono-sm" x="44" y="280" fill="#e2e8f0">{</text>
+    <text class="mono-sm" x="44" y="300" fill="#93c5fd">  "nodeVersion": <tspan fill="#fcd34d">"v22.22.1"</tspan>, "platform": <tspan fill="#fcd34d">"linux"</tspan>,</text>
+    <text class="mono-sm" x="44" y="320" fill="#93c5fd">  "engines": {</text>
+    <text class="mono-sm" x="44" y="340" fill="#34d399">    "codex":  { "installed": true, "version": "codex-cli 0.171.0", "minVersion": "0.160.0", "compatible": true, "missingFlags": [] },</text>
+    <text class="mono-sm" x="44" y="360" fill="#fbbf24">    "claude": { "installed": true, "version": "2.1.325 (Claude Code)", "minVersion": "2.1.259", "compatible": true, "missingFlags": [] }</text>
+    <text class="mono-sm" x="44" y="380" fill="#93c5fd">  },</text>
+    <text class="mono-sm" x="44" y="400" fill="#93c5fd">  "modelDefaults": {</text>
+    <text class="mono-sm" x="44" y="420" fill="#e2e8f0">    "default": { "codex": { "model": <tspan fill="#34d399">"gpt-6.2-sol"</tspan>, "effort": <tspan fill="#34d399">"high"</tspan> }, "claude": { "model": <tspan fill="#fbbf24">"claude-opus-5-5"</tspan>, "effort": <tspan fill="#fbbf24">"high"</tspan> } }</text>
+    <text class="mono-sm" x="44" y="440" fill="#93c5fd">  },</text>
+    <text class="mono-sm" x="44" y="460" fill="#93c5fd">  "routingConfig": { "policy": <tspan fill="#fcd34d">"balanced"</tspan>, "allowUnsandboxedWriteAuto": <tspan fill="#f87171">false</tspan> },</text>
+    <text class="mono-sm" x="44" y="480" fill="#93c5fd">  "staleJobsRecovered": { "recoveredCount": 0, "recoveredJobIds": [] }</text>
+    <text class="mono-sm" x="44" y="500" fill="#e2e8f0">}</text>
+  </g>
+</svg>

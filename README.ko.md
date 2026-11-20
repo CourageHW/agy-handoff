@@ -4,6 +4,16 @@
 
 별도 API 키 설정이나 `npm install` 없이 로컬에 로그인된 `codex` · `claude` 인증을 그대로 재사용하며, Antigravity 커뮤니티에서 자주 겪는 **불필요한 전체 저장소 탐색, 작업 결과 검증 불확실성, 쿼터 집중, 서브에이전트 규칙/컨텍스트 혼선, 타임아웃·실패 시 복구 어려움**을 실질적으로 보완합니다.
 
+<p align="center">
+  <img src="./assets/overview.svg" alt="agy-handoff 멀티 에이전트 오케스트레이션 아키텍처 개요" width="100%" />
+</p>
+
+<p align="center">
+  <img src="./assets/demo.svg" alt="agy-handoff 실시간 터미널 데모 (Subagents Alt+J, 4단계 검증 교차 리뷰, Watch & Stats, Install & Doctor)" width="100%" />
+</p>
+
+> **애니메이션 GIF 버전**: [`assets/demo.gif`](./assets/demo.gif) · **VHS 스크립트**: [`assets/demo.tape`](./assets/demo.tape)
+
 ## 주요 기능 (v0.2.0)
 
 - **의존성 제로 (Zero-dependency)**: Node.js (`>= 18.18.0`) 내장 모듈만으로 동작해 설치 즉시 실행됩니다.

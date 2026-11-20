@@ -1,0 +1,180 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 560" width="100%" height="100%">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0b0f19"/>
+      <stop offset="50%" stop-color="#111827"/>
+      <stop offset="100%" stop-color="#0d1322"/>
+    </linearGradient>
+    <linearGradient id="accentCyan" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#06b6d4"/>
+      <stop offset="100%" stop-color="#3b82f6"/>
+    </linearGradient>
+    <linearGradient id="accentCodex" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#10b981"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+    <linearGradient id="accentClaude" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#d97706"/>
+    </linearGradient>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+    <marker id="arrowCyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#38bdf8"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#34d399"/>
+    </marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#fbbf24"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1080" height="560" rx="16" fill="url(#bgGrad)" stroke="#1e293b" stroke-width="2"/>
+
+  <!-- Top Header Banner -->
+  <rect x="28" y="22" width="1024" height="64" rx="12" fill="#131c2e" stroke="#1e293b" stroke-width="1.5"/>
+  <rect x="44" y="38" width="10" height="32" rx="5" fill="url(#accentCyan)"/>
+  <text x="66" y="54" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="20" font-weight="700">agy-handoff v0.2.0</text>
+  <text x="262" y="54" fill="#38bdf8" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600">Zero-Dependency Multi-Agent Orchestrator for Google Antigravity</text>
+  <text x="66" y="73" fill="#94a3b8" font-family="ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="12.5">Reuses local OpenAI Codex &amp; Anthropic Claude Code logins · Context-Aware Handoff · 4-Stage Verified Cross-Review · Live Subagent Panes</text>
+
+  <!-- Badges top-right -->
+  <rect x="850" y="34" width="90" height="24" rx="12" fill="#0f291e" stroke="#10b981" stroke-width="1"/>
+  <text x="895" y="50" text-anchor="middle" fill="#34d399" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="600">0 npm deps</text>
+  <rect x="948" y="34" width="90" height="24" rx="12" fill="#172554" stroke="#3b82f6" stroke-width="1"/>
+  <text x="993" y="50" text-anchor="middle" fill="#60a5fa" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" font-weight="600">9 MCP tools</text>
+
+  <!-- LEFT COLUMN: Google Antigravity Host -->
+  <g filter="url(#shadow)">
+    <rect x="28" y="106" width="270" height="426" rx="14" fill="#111827" stroke="#334155" stroke-width="1.5"/>
+    <rect x="28" y="106" width="270" height="42" rx="14" fill="#1e293b"/>
+    <circle cx="48" cy="127" r="6" fill="#38bdf8"/>
+    <text x="64" y="132" fill="#f8fafc" font-family="ui-sans-serif, -apple-system, sans-serif" font-size="14.5" font-weight="700">Google Antigravity Host</text>
+    <text x="245" y="131" fill="#94a3b8" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11">agy / IDE</text>
+
+    <!-- Slash commands box -->
+    <rect x="44" y="162" width="238" height="128" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="56" y="182" fill="#38bdf8" font-family="ui-sans-serif, sans-serif" font-size="12" font-weight="700">5 Companion Slash Skills</text>
+    <text x="56" y="203" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5">/agy-handoff:handoff-doctor</text>
+    <text x="56" y="222" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5">/agy-handoff:handoff-review</text>
+    <text x="56" y="241" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5">/agy-handoff:handoff-cross-review</text>
+    <text x="56" y="260" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5">/agy-handoff:handoff-delegate</text>
+    <text x="56" y="279" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5">/agy-handoff:handoff-models</text>
+
+    <!-- Context-Isolated Subagent Panes -->
+    <rect x="44" y="304" width="238" height="114" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="56" y="324" fill="#a78bfa" font-family="ui-sans-serif, sans-serif" font-size="12" font-weight="700">Live Subagent Panes (/agents · Alt+J)</text>
+    <rect x="54" y="334" width="218" height="34" rx="6" fill="#0f172a" stroke="#10b981" stroke-width="1"/>
+    <circle cx="66" cy="351" r="4" fill="#10b981"/>
+    <text x="76" y="348" fill="#f1f5f9" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5" font-weight="600">codex-handoff · gpt-6.2-sol high</text>
+    <text x="76" y="362" fill="#6ee7b7" font-family="ui-monospace, SFMono-Regular, monospace" font-size="9.5">Run: git diff · Read src/cross-review.mjs</text>
+
+    <rect x="54" y="375" width="218" height="34" rx="6" fill="#0f172a" stroke="#f59e0b" stroke-width="1"/>
+    <circle cx="66" cy="392" r="4" fill="#f59e0b"/>
+    <text x="76" y="389" fill="#f1f5f9" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5" font-weight="600">claude-handoff · opus-5-5 high</text>
+    <text x="76" y="403" fill="#fcd34d" font-family="ui-monospace, SFMono-Regular, monospace" font-size="9.5">Grep: verifyFindingCitation · Read jobs.mjs</text>
+
+    <!-- Terminal CLI Watch & Stats -->
+    <rect x="44" y="430" width="238" height="86" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="56" y="450" fill="#38bdf8" font-family="ui-sans-serif, sans-serif" font-size="12" font-weight="700">Terminal Dashboard &amp; Stats</text>
+    <text x="56" y="470" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11">$ node src/cli.mjs watch</text>
+    <text x="56" y="488" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11">$ node src/cli.mjs stats --table</text>
+    <text x="56" y="505" fill="#64748b" font-family="ui-sans-serif, sans-serif" font-size="10.5">Engine share · success rate · avg runtime</text>
+  </g>
+
+  <!-- Arrows Host <-> Orchestrator -->
+  <line x1="298" y1="225" x2="344" y2="225" stroke="#38bdf8" stroke-width="2.2" marker-end="url(#arrowCyan)"/>
+  <line x1="344" y1="360" x2="298" y2="360" stroke="#38bdf8" stroke-width="2.2" marker-end="url(#arrowCyan)"/>
+  <text x="321" y="215" text-anchor="middle" fill="#7dd3fc" font-family="ui-monospace, monospace" font-size="10">stdio</text>
+  <text x="321" y="376" text-anchor="middle" fill="#7dd3fc" font-family="ui-monospace, monospace" font-size="10">events</text>
+
+  <!-- CENTER COLUMN: agy-handoff Orchestration Core -->
+  <g filter="url(#shadow)">
+    <rect x="348" y="106" width="384" height="426" rx="14" fill="#111827" stroke="#0284c7" stroke-width="1.8"/>
+    <rect x="348" y="106" width="384" height="42" rx="14" fill="url(#accentCyan)"/>
+    <text x="368" y="132" fill="#ffffff" font-family="ui-sans-serif, -apple-system, sans-serif" font-size="15" font-weight="700">agy-handoff MCP Orchestration Core</text>
+
+    <!-- Pillar 1: Context-Aware Handoff & Routing -->
+    <rect x="364" y="162" width="352" height="78" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="378" y="182" fill="#38bdf8" font-family="ui-sans-serif, sans-serif" font-size="12.5" font-weight="700">1. Context-Aware Handoff &amp; Smart Auto-Routing</text>
+    <text x="378" y="201" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11">context: { files, summary, constraints, acceptanceCriteria }</text>
+    <text x="378" y="218" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">• Validates workspace paths on disk; skips redundant full-repo sweeps</text>
+    <text x="378" y="233" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">• engine: "auto" balances quota, CLI compatibility &amp; failure streaks</text>
+
+    <!-- Pillar 2: 4-Stage Verified Cross-Review -->
+    <rect x="364" y="250" width="352" height="106" rx="10" fill="#0b1120" stroke="#0284c7" stroke-width="1.2"/>
+    <text x="378" y="270" fill="#38bdf8" font-family="ui-sans-serif, sans-serif" font-size="12.5" font-weight="700">2. Structured Cross-Review &amp; 4-Stage Verification</text>
+    <text x="378" y="288" fill="#e2e8f0" font-family="ui-sans-serif, sans-serif" font-size="11.5">Matches Consensus / Conflicts / Unique via location + defect concepts:</text>
+    <!-- 4 stage pills -->
+    <rect x="376" y="298" width="76" height="46" rx="6" fill="#0f291e" stroke="#10b981" stroke-width="1"/>
+    <text x="414" y="316" text-anchor="middle" fill="#34d399" font-family="ui-monospace, monospace" font-size="10" font-weight="700">Stage 1</text>
+    <text x="414" y="332" text-anchor="middle" fill="#d1fae5" font-family="ui-sans-serif, sans-serif" font-size="10">CLI Exit=0</text>
+
+    <rect x="460" y="298" width="80" height="46" rx="6" fill="#0f291e" stroke="#10b981" stroke-width="1"/>
+    <text x="500" y="316" text-anchor="middle" fill="#34d399" font-family="ui-monospace, monospace" font-size="10" font-weight="700">Stage 2</text>
+    <text x="500" y="332" text-anchor="middle" fill="#d1fae5" font-family="ui-sans-serif, sans-serif" font-size="10">JSON Schema</text>
+
+    <rect x="548" y="298" width="80" height="46" rx="6" fill="#0f291e" stroke="#10b981" stroke-width="1"/>
+    <text x="588" y="316" text-anchor="middle" fill="#34d399" font-family="ui-monospace, monospace" font-size="10" font-weight="700">Stage 3</text>
+    <text x="588" y="332" text-anchor="middle" fill="#d1fae5" font-family="ui-sans-serif, sans-serif" font-size="10">File &amp; Line</text>
+
+    <rect x="636" y="298" width="70" height="46" rx="6" fill="#2e190f" stroke="#f59e0b" stroke-width="1"/>
+    <text x="671" y="316" text-anchor="middle" fill="#fbbf24" font-family="ui-monospace, monospace" font-size="10" font-weight="700">Stage 4</text>
+    <text x="671" y="332" text-anchor="middle" fill="#fef3c7" font-family="ui-sans-serif, sans-serif" font-size="10">Host Code</text>
+
+    <!-- Pillar 3: Execution Evidence & Git Delta -->
+    <rect x="364" y="366" width="352" height="72" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="378" y="386" fill="#38bdf8" font-family="ui-sans-serif, sans-serif" font-size="12.5" font-weight="700">3. Factual Execution Evidence &amp; Git Delta</text>
+    <text x="378" y="404" fill="#cbd5e1" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.8">succeededToolCalls · filesInspected · filesModified · workspaceGitDelta</text>
+    <text x="378" y="422" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">• Flags silent runs (0 tool calls) or unapplied workspace-write claims</text>
+
+    <!-- Pillar 4: Reliable Background Jobs & Safe Retry -->
+    <rect x="364" y="448" width="352" height="68" rx="10" fill="#0b1120" stroke="#1e293b" stroke-width="1.2"/>
+    <text x="378" y="468" fill="#38bdf8" font-family="ui-sans-serif, sans-serif" font-size="12.5" font-weight="700">4. Crash Recovery &amp; Read-Only Job Replay</text>
+    <text x="378" y="486" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">• Reaps dead ownerPid jobs; replays read-only jobs on same/fallback CLI</text>
+    <text x="378" y="503" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">• Refuses workspace-write retries, root/home/system dirs &amp; --dangerously-*</text>
+  </g>
+
+  <!-- Arrows Orchestrator <-> Codex / Claude -->
+  <line x1="732" y1="215" x2="778" y2="215" stroke="#34d399" stroke-width="2.2" marker-end="url(#arrowGreen)"/>
+  <line x1="778" y1="245" x2="732" y2="245" stroke="#34d399" stroke-width="2.2" marker-end="url(#arrowGreen)"/>
+
+  <line x1="732" y1="405" x2="778" y2="405" stroke="#fbbf24" stroke-width="2.2" marker-end="url(#arrowAmber)"/>
+  <line x1="778" y1="435" x2="732" y2="435" stroke="#fbbf24" stroke-width="2.2" marker-end="url(#arrowAmber)"/>
+
+  <!-- RIGHT COLUMN: Local External CLIs -->
+  <!-- Top-Right: OpenAI Codex CLI -->
+  <g filter="url(#shadow)">
+    <rect x="782" y="106" width="270" height="202" rx="14" fill="#111827" stroke="#10b981" stroke-width="1.6"/>
+    <rect x="782" y="106" width="270" height="42" rx="14" fill="url(#accentCodex)"/>
+    <text x="802" y="132" fill="#ffffff" font-family="ui-sans-serif, -apple-system, sans-serif" font-size="14.5" font-weight="700">OpenAI Codex CLI (codex)</text>
+
+    <text x="798" y="168" fill="#34d399" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5" font-weight="700">Default: gpt-6.2-sol (high)</text>
+    <text x="798" y="186" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">Efforts: low · medium · high · xhigh · max · ultra</text>
+    <rect x="796" y="198" width="242" height="96" rx="8" fill="#0b1120" stroke="#1e293b" stroke-width="1"/>
+    <text x="806" y="216" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• -s read-only (OS sandbox)</text>
+    <text x="806" y="234" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• --json --ephemeral</text>
+    <text x="806" y="252" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• --output-schema (structured JSON)</text>
+    <text x="806" y="270" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• exec resume &lt;thread_id&gt;</text>
+    <text x="806" y="286" fill="#6ee7b7" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">Requires codex-cli &gt;= 0.160.0</text>
+  </g>
+
+  <!-- Bottom-Right: Anthropic Claude Code CLI -->
+  <g filter="url(#shadow)">
+    <rect x="782" y="330" width="270" height="202" rx="14" fill="#111827" stroke="#f59e0b" stroke-width="1.6"/>
+    <rect x="782" y="330" width="270" height="42" rx="14" fill="url(#accentClaude)"/>
+    <text x="802" y="356" fill="#ffffff" font-family="ui-sans-serif, -apple-system, sans-serif" font-size="14.5" font-weight="700">Claude Code CLI (claude)</text>
+
+    <text x="798" y="392" fill="#fbbf24" font-family="ui-monospace, SFMono-Regular, monospace" font-size="11.5" font-weight="700">Default: claude-opus-5-5 (high)</text>
+    <text x="798" y="410" fill="#94a3b8" font-family="ui-sans-serif, sans-serif" font-size="11.5">Efforts: low · medium · high · xhigh · max</text>
+    <rect x="796" y="422" width="242" height="96" rx="8" fill="#0b1120" stroke="#1e293b" stroke-width="1"/>
+    <text x="806" y="440" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• --restricted --strict-mcp-config</text>
+    <text x="806" y="458" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• --permission-mode dontAsk</text>
+    <text x="806" y="476" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• --json-schema (structured JSON)</text>
+    <text x="806" y="494" fill="#e2e8f0" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10.5">• --resume &lt;session_id&gt;</text>
+    <text x="806" y="510" fill="#fcd34d" font-family="ui-monospace, SFMono-Regular, monospace" font-size="10">Requires Claude Code &gt;= 2.1.259</text>
+  </g>
+</svg>

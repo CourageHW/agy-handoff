@@ -4,6 +4,16 @@
 
 It reuses whatever `codex` and `claude` sessions you are already signed into locally—no `npm install` step and no separate API keys—while addressing common multi-agent workflow failures: redundant repo scans, unverified tool claims, quota bottlenecks, context bleed across subagents, and silent CLI crashes.
 
+<p align="center">
+  <img src="./assets/overview.svg" alt="agy-handoff Architecture & Multi-Agent Orchestration Overview" width="100%" />
+</p>
+
+<p align="center">
+  <img src="./assets/demo.svg" alt="agy-handoff Live Terminal Walkthrough (Subagents Alt+J, 4-Stage Verified Cross-Review, Watch & Stats, Install & Doctor)" width="100%" />
+</p>
+
+> **Animated GIF version**: [`assets/demo.gif`](./assets/demo.gif) · **VHS recipe**: [`assets/demo.tape`](./assets/demo.tape)
+
 ## What agy-handoff Solves
 
 - **Zero npm dependencies**: Pure Node.js (`>= 18.18.0`) standard library modules.
