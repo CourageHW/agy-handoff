@@ -450,14 +450,25 @@ export function parseAgyStreamJsonLine(line) {
 
     if (
       su.step_type === "agent_response" &&
-      su.state === "DONE" &&
       typeof su.text_delta === "string" &&
-      su.text_delta.trim()
+      su.text_delta.length > 0
     ) {
+      if (su.state === "DONE") {
+        if (su.text_delta.trim()) {
+          return [
+            {
+              kind: "message",
+              summary: `Note: ${compactText(su.text_delta)}`,
+            },
+          ];
+        }
+        return [];
+      }
       return [
         {
-          kind: "message",
-          summary: `Note: ${compactText(su.text_delta)}`,
+          kind: "progress",
+          deltaChars: su.text_delta.length,
+          summary: "Generating response...",
         },
       ];
     }
@@ -485,7 +496,11 @@ export function parseAgyStreamJsonLine(line) {
   return [];
 }
 
-export function createEventStreamParser(engine, onEvent) {
+export function createEventStreamParser(
+  engine,
+  onEvent,
+  { progressThrottleMs = 5000 } = {},
+) {
   const parseLine =
     engine === "codex"
       ? parseCodexJsonLine
@@ -493,6 +508,8 @@ export function createEventStreamParser(engine, onEvent) {
         ? parseAgyStreamJsonLine
         : parseClaudeStreamJsonLine;
   let seq = 0;
+  let lastProgressEmitAt = 0;
+  let bufferedProgressChars = 0;
 
   return createLineStreamParser((line) => {
     let events;
@@ -502,13 +519,38 @@ export function createEventStreamParser(engine, onEvent) {
       return;
     }
     for (const ev of events) {
+      let emitEv = ev;
+      if (ev.kind === "progress") {
+        bufferedProgressChars += typeof ev.deltaChars === "number" ? ev.deltaChars : 0;
+        const now = Date.now();
+        if (
+          progressThrottleMs > 0 &&
+          lastProgressEmitAt > 0 &&
+          now - lastProgressEmitAt < progressThrottleMs
+        ) {
+          continue;
+        }
+        lastProgressEmitAt = now;
+        emitEv = {
+          kind: "progress",
+          charsGenerated: bufferedProgressChars,
+          summary:
+            bufferedProgressChars > 0
+              ? `Generating response (${bufferedProgressChars} chars)...`
+              : ev.summary || "Generating response...",
+        };
+      } else {
+        lastProgressEmitAt = 0;
+        bufferedProgressChars = 0;
+      }
+
       seq += 1;
       try {
         onEvent({
           ts: new Date().toISOString(),
           seq,
           engine,
-          ...ev,
+          ...emitEv,
         });
       } catch {
         // isolate consumer errors so remaining events in the chunk still parse

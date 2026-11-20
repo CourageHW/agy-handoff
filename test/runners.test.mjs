@@ -725,3 +725,115 @@ test("AGY reads terminal results past the stdout limit and fails incomplete stre
   assert.equal(incomplete.ok, false);
   assert.match(incomplete.output, /ended without a valid result/);
 });
+
+test("AGY sets AGY_HANDOFF_NESTED=1 for child processes and parent SIGTERM cleans up detached children", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(tmpDir, "agy-nested-orphan-"));
+  t.after(() => fs.rmSync(cwd, RM_OPTS));
+  const previous = process.env.AGY_HANDOFF_AGY_BIN;
+  t.after(() => {
+    if (previous === undefined) delete process.env.AGY_HANDOFF_AGY_BIN;
+    else process.env.AGY_HANDOFF_AGY_BIN = previous;
+  });
+
+  process.env.AGY_HANDOFF_AGY_BIN = createFakeExecutable(
+    cwd,
+    "agy",
+    `
+    console.log(JSON.stringify({
+      event: "result",
+      result: { status: "SUCCESS", response: "nested=" + (process.env.AGY_HANDOFF_NESTED || "") }
+    }));
+    `,
+  );
+  const res = await runAgyExec({ cwd, prompt: "check env" });
+  assert.equal(res.ok, true);
+  assert.equal(res.output, "nested=1");
+
+  if (process.platform !== "win32") {
+    const pidFile = path.join(cwd, "child.pid");
+    const childScript = path.join(cwd, "child.mjs");
+    fs.writeFileSync(
+      childScript,
+      `import fs from "node:fs"; fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 30000);\n`,
+      "utf8",
+    );
+    const runnerUrl = new URL("../src/runners/common.mjs", import.meta.url).href;
+    const parentScript = path.join(cwd, "parent.mjs");
+    fs.writeFileSync(
+      parentScript,
+      `
+      import { runCommand } from ${JSON.stringify(runnerUrl)};
+      await runCommand({
+        command: process.execPath,
+        args: [${JSON.stringify(childScript)}],
+        cwd: ${JSON.stringify(cwd)},
+        timeoutMs: 30000,
+      });
+      `,
+      "utf8",
+    );
+
+    const { spawn } = await import("node:child_process");
+    const parent = spawn(process.execPath, [parentScript], { stdio: "ignore" });
+    let childPid = null;
+    for (let i = 0; i < 60; i += 1) {
+      if (fs.existsSync(pidFile)) {
+        const raw = fs.readFileSync(pidFile, "utf8").trim();
+        if (/^\d+$/.test(raw)) {
+          childPid = Number.parseInt(raw, 10);
+          break;
+        }
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.ok(childPid, "Expected detached child to write its PID");
+    parent.kill("SIGTERM");
+    await new Promise((r) => parent.once("exit", r));
+
+    let alive = true;
+    for (let i = 0; i < 40; i += 1) {
+      try {
+        process.kill(childPid, 0);
+        await new Promise((r) => setTimeout(r, 50));
+      } catch {
+        alive = false;
+        break;
+      }
+    }
+    if (alive) {
+      try {
+        process.kill(-childPid, "SIGKILL");
+      } catch {
+        // ignore
+      }
+    }
+    assert.equal(alive, false, "Detached child process should be terminated when parent receives SIGTERM");
+  }
+});
+
+test("Codex disableWebSearch and AGY --print-timeout flags are emitted when configured", () => {
+  const codexPlanSpec = buildCodexExecSpec({
+    prompt: "Plan locally",
+    cwd: tmpDir,
+    disableWebSearch: true,
+  });
+  const wsIdx = codexPlanSpec.args.indexOf('web_search="disabled"');
+  assert.notEqual(wsIdx, -1);
+  assert.equal(codexPlanSpec.args[wsIdx - 1], "-c");
+
+  const codexReviewSpec = buildCodexReviewSpec({
+    cwd: tmpDir,
+    style: "adversarial",
+    scope: "uncommitted",
+    disableWebSearch: true,
+  });
+  assert.ok(codexReviewSpec.args.includes('web_search="disabled"'));
+
+  const agySpec = buildAgyReviewSpec({
+    cwd: tmpDir,
+    timeoutSec: 240,
+  });
+  const ptIdx = agySpec.args.indexOf("--print-timeout");
+  assert.notEqual(ptIdx, -1);
+  assert.equal(agySpec.args[ptIdx + 1], "240s");
+});

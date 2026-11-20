@@ -159,6 +159,7 @@ export function buildAgyExecSpec({
   effort,
   sessionId,
   jsonSchema,
+  timeoutSec,
 }) {
   if (!prompt || !prompt.trim()) {
     throw new Error("Prompt is required for Antigravity (`agy`) execution.");
@@ -175,6 +176,7 @@ export function buildAgyExecSpec({
   }
   const validModel = validateModelFlag(model);
   const validSessionId = validateSessionId(sessionId);
+  const validTimeoutSec = validateTimeoutSec(timeoutSec);
   const resolvedCwd =
     mode === "workspace-write"
       ? validateWorkspaceWriteCwd(cwd)
@@ -203,6 +205,9 @@ export function buildAgyExecSpec({
   if (validSessionId) {
     args.push("--conversation", validSessionId);
   }
+  if (validTimeoutSec) {
+    args.push("--print-timeout", `${validTimeoutSec}s`);
+  }
   if (jsonSchema && typeof jsonSchema === "object" && !Array.isArray(jsonSchema)) {
     args.push("--json-schema", JSON.stringify(jsonSchema));
   }
@@ -226,6 +231,7 @@ export function buildAgyReviewSpec({
   model,
   effort,
   jsonSchema,
+  timeoutSec,
 }) {
   if (!VALID_REVIEW_STYLES.has(style)) {
     throw new Error(`Unsupported style "${style}". Allowed: standard, adversarial.`);
@@ -266,6 +272,7 @@ export function buildAgyReviewSpec({
     model,
     effort,
     jsonSchema,
+    timeoutSec,
   });
 }
 
@@ -381,6 +388,7 @@ async function executeAgy(
     args: spec.args,
     cwd: spec.cwd,
     stdin: spec.stdin,
+    env: { AGY_HANDOFF_NESTED: "1" },
     timeoutMs,
     signal,
     onStdoutChunk(chunk) {

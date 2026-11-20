@@ -441,3 +441,78 @@ test("MCP stdio server dispatches non-blocking requests and handles notification
     fs.rmSync(tmpDir, RM_OPTS);
   }
 });
+
+test("MCP stdio server disables tools when AGY_HANDOFF_NESTED=1 and emits heartbeats during silent runs", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-handoff-mcp-nested-"));
+  const tempConfigPath = path.join(tmpDir, "config.json");
+  try {
+    const nestedResponses = await sendRpcSession(
+      [
+        { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} },
+        {
+          jsonrpc: "2.0",
+          id: 2,
+          method: "tools/call",
+          params: { name: "handoff_doctor", arguments: {} },
+        },
+      ],
+      {
+        AGY_HANDOFF_NESTED: "1",
+        AGY_HANDOFF_CONFIG: tempConfigPath,
+        PLUGIN_DATA: tmpDir,
+      },
+    );
+
+    const listResp = nestedResponses.find((r) => r.id === 1);
+    const callResp = nestedResponses.find((r) => r.id === 2);
+    assert.deepEqual(listResp.result.tools, []);
+    assert.equal(callResp.result.isError, true);
+    assert.match(callResp.result.content[0].text, /Recursive agy-handoff/i);
+
+    const slowClaude = createFakeExecutable(
+      tmpDir,
+      "slow-heartbeat-claude",
+      `
+      console.log(JSON.stringify({ type: "system", subtype: "init", session_id: "s_hb", model: "claude-opus-5-5" }));
+      setTimeout(() => {
+        console.log(JSON.stringify({ type: "result", result: "Done after wait", session_id: "s_hb", is_error: false, num_turns: 1 }));
+      }, 260);
+      `,
+    );
+
+    const hbMessages = await sendRpcSession(
+      [
+        {
+          jsonrpc: "2.0",
+          id: 3,
+          method: "tools/call",
+          params: {
+            name: "handoff_delegate",
+            arguments: { engine: "claude", prompt: "Think slowly", cwd: tmpDir },
+            _meta: { progressToken: "hb-1" },
+          },
+        },
+      ],
+      {
+        AGY_HANDOFF_CONFIG: tempConfigPath,
+        PLUGIN_DATA: tmpDir,
+        AGY_HANDOFF_CLAUDE_BIN: slowClaude,
+        AGY_HANDOFF_HEARTBEAT_MS: "80",
+      },
+    );
+
+    const progressNotes = hbMessages.filter((m) => m.method === "notifications/progress");
+    const finalResp = hbMessages.find((m) => m.id === 3);
+    assert.ok(
+      progressNotes.some((n) => /Still running \(.+ elapsed\)/.test(n.params.message)),
+      `Expected heartbeat progress notification, got: ${JSON.stringify(progressNotes)}`,
+    );
+    assert.equal(finalResp.result.isError, false);
+    const payload = JSON.parse(finalResp.result.content[0].text);
+    assert.equal(payload.output, "Done after wait");
+    // Heartbeat must not pollute executionEvidence
+    assert.equal(payload.executionEvidence.observedToolCalls, 0);
+  } finally {
+    fs.rmSync(tmpDir, RM_OPTS);
+  }
+});

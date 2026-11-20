@@ -20,7 +20,10 @@ Design a zero-handwaving, file-verified implementation plan by combining **Grill
    - If the spec is already clear or confirmed, proceed immediately to Stage 2.
 
 ### Stage 2: 3-to-1 Multi-Agent Collaborative Plan Design (`handoff_plan`)
-1. **Run `handoff_plan` (or 3 parallel subagent panes in Antigravity CLI)**:
+1. **Scope large greenfield specs & keep planning local-first**:
+   - For very large specs (e.g., >30 KB `SPEC.md` spanning many subsystems), prefer splitting into focused architectural slices (e.g., Core/Schema, Runtime/Engine, CLI/Integration) or running `phase: "discover"` first so each child session stays fast and high-signal.
+   - `handoff_plan` disables Codex external web search by default (`allowWebSearch: false`) and enforces concise output budgets so child models stay grounded in local files without multi-minute web-search loops.
+2. **Run `handoff_plan` (or 3 parallel subagent panes in Antigravity CLI)**:
    - **Direct MCP call (`handoff_plan`)**:
      Pass `cwd` (repository root), `goal`, `phase: "design"`, `decisions` (`[{ branch, question, answer }]`), `requirements`, `nonGoals`, `constraints`, `acceptanceCriteria`, `context: { files, summary }`, and `structured: true`.
    - **Visible 3-subagent panes (`/agents`, `Alt+J`)**:

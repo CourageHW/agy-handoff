@@ -538,6 +538,12 @@ export const TOOLS = [
           description:
             "Run the 3rd Antigravity planner (default: gemini-4-neon-high) in parallel for 3-to-1 collaborative plan synthesis.",
         },
+        allowWebSearch: {
+          type: "boolean",
+          default: false,
+          description:
+            "Allow Codex to perform external web searches during planning (disabled by default to keep planning fast and grounded in local repo files/specs).",
+        },
         cwd: {
           type: "string",
           description: "Repository working directory (defaults to server cwd).",
@@ -642,6 +648,31 @@ export function validateToolArgs(toolName, rawArgs) {
   return args;
 }
 
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+
+function getHeartbeatIntervalMs() {
+  const raw = process.env.AGY_HANDOFF_HEARTBEAT_MS;
+  if (raw === undefined || raw === "") {
+    return DEFAULT_HEARTBEAT_INTERVAL_MS;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return DEFAULT_HEARTBEAT_INTERVAL_MS;
+  }
+  return parsed;
+}
+
+function formatHeartbeatElapsed(ms) {
+  const totalSec = Math.max(1, Math.floor(ms / 1000));
+  const mins = Math.floor(totalSec / 60);
+  const secs = totalSec % 60;
+  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+function isNestedHandoffSession() {
+  return process.env.AGY_HANDOFF_NESTED === "1";
+}
+
 async function runTrackedForeground(
   jobManager,
   {
@@ -679,20 +710,64 @@ async function runTrackedForeground(
   const beforeGit =
     mode === "workspace-write" ? await captureGitDirtySnapshot(cwd) : null;
 
-  const handleEvent = (ev) => {
-    evidenceTracker.recordEvent(ev);
-    tracker.recordEvent(ev);
+  const startedAt = Date.now();
+  let lastEventAt = startedAt;
+  let nextSeq = 0;
+  let lastMeaningfulActivity = "Starting...";
+
+  const emitTrackedEvent = (ev, { recordEvidence = true } = {}) => {
+    nextSeq += 1;
+    const normalizedEv = {
+      ...ev,
+      ts: ev.ts || new Date().toISOString(),
+      seq: nextSeq,
+      engine: ev.engine || engine,
+    };
+    lastEventAt = Date.now();
+    if (normalizedEv.kind !== "heartbeat" && normalizedEv.summary) {
+      lastMeaningfulActivity = normalizedEv.summary;
+    }
+    if (recordEvidence) {
+      evidenceTracker.recordEvent(normalizedEv);
+    }
+    tracker.recordEvent(normalizedEv);
     if (typeof onProgress === "function") {
       try {
         onProgress({
-          progress: ev.seq,
-          message: `[${ev.engine}] ${ev.summary}`,
+          progress: normalizedEv.seq,
+          message: `[${normalizedEv.engine}] ${normalizedEv.summary}`,
         });
       } catch {
         // ignore progress emission error
       }
     }
   };
+
+  const handleEvent = (ev) => {
+    emitTrackedEvent(ev, { recordEvidence: true });
+  };
+
+  const heartbeatIntervalMs = getHeartbeatIntervalMs();
+  const heartbeatTimer =
+    heartbeatIntervalMs > 0
+      ? setInterval(() => {
+          const now = Date.now();
+          if (now - lastEventAt < heartbeatIntervalMs) {
+            return;
+          }
+          emitTrackedEvent(
+            {
+              engine,
+              kind: "heartbeat",
+              summary: `Still running (${formatHeartbeatElapsed(now - startedAt)} elapsed) — last: ${lastMeaningfulActivity}`,
+            },
+            { recordEvidence: false },
+          );
+        }, Math.min(heartbeatIntervalMs, 5000))
+      : null;
+  if (heartbeatTimer) {
+    heartbeatTimer.unref();
+  }
 
   try {
     const result = await fn(handleEvent);
@@ -728,6 +803,10 @@ async function runTrackedForeground(
       executionEvidence: evidenceTracker.finalize({ ok: false }),
     });
     throw err;
+  } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+    }
   }
 }
 
@@ -778,7 +857,7 @@ function buildBackgroundReviewJobSpec({
   if (engine === "agy") {
     const binary = findAgyBinary();
     if (!binary) throw new Error("Antigravity CLI (`agy`) not found in PATH.");
-    const spec = buildAgyReviewSpec(effectiveArgs);
+    const spec = buildAgyReviewSpec({ ...effectiveArgs, timeoutSec });
     return {
       engine: "agy",
       action: "review",
@@ -860,7 +939,7 @@ function buildBackgroundDelegateJobSpec({
   if (engine === "agy") {
     const binary = findAgyBinary();
     if (!binary) throw new Error("Antigravity CLI (`agy`) not found in PATH.");
-    const spec = buildAgyExecSpec(effectiveArgs);
+    const spec = buildAgyExecSpec({ ...effectiveArgs, timeoutSec });
     return {
       engine: "agy",
       action: "delegate",
@@ -1285,6 +1364,7 @@ export async function handleToolCall(
                 effort: codexCfg.effort,
                 cwd: resolvedCwd,
                 skipGitRepoCheck,
+                disableWebSearch: true,
                 timeoutSec,
                 signal,
                 outputSchema: structured ? STRUCTURED_REVIEW_SCHEMA : undefined,
@@ -1708,6 +1788,7 @@ export async function handleToolCall(
                 cwd: resolvedCwd,
                 skipGitRepoCheck,
                 ephemeral: true,
+                disableWebSearch: args.allowWebSearch !== true,
                 timeoutSec,
                 signal,
                 outputSchema: structured ? STRUCTURED_PLAN_SCHEMA : undefined,
@@ -1912,8 +1993,8 @@ export async function handleToolCall(
 }
 
 export function createJsonRpcHandler(
-  jobManager = new JobManager(),
-  { emitNotification } = {},
+  jobManager = isNestedHandoffSession() ? null : new JobManager(),
+  { emitNotification, nested = isNestedHandoffSession() } = {},
 ) {
   const inFlight = new Map();
 
@@ -1994,11 +2075,26 @@ export function createJsonRpcHandler(
           return {
             jsonrpc: "2.0",
             id,
-            result: { tools: TOOLS },
+            result: { tools: nested ? [] : TOOLS },
           };
         }
 
         case "tools/call": {
+          if (nested) {
+            return {
+              jsonrpc: "2.0",
+              id,
+              result: {
+                content: [
+                  {
+                    type: "text",
+                    text: "Error: Recursive agy-handoff tool calls are disabled inside nested handoff child sessions.",
+                  },
+                ],
+                isError: true,
+              },
+            };
+          }
           const toolName = params?.name;
           const toolArgs = params?.arguments === undefined ? {} : params.arguments;
           const rawToken = params?._meta?.progressToken;
@@ -2109,7 +2205,8 @@ export function createJsonRpcHandler(
 }
 
 function startStdioServer() {
-  const jobManager = new JobManager();
+  const nested = isNestedHandoffSession();
+  const jobManager = nested ? null : new JobManager();
   let buffer = "";
   let pending = 0;
 
@@ -2123,6 +2220,7 @@ function startStdioServer() {
 
   const handleMessage = createJsonRpcHandler(jobManager, {
     emitNotification: writeResponse,
+    nested,
   });
 
   const dispatchLine = (line) => {
@@ -2160,13 +2258,16 @@ function startStdioServer() {
   };
 
   const shutdown = () => {
-    jobManager.shutdown();
+    jobManager?.shutdown();
     terminateAllForegroundCommands();
     process.exit(0);
   };
 
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);
+  if (process.platform !== "win32") {
+    process.on("SIGHUP", shutdown);
+  }
 
   process.stdin.setEncoding("utf8");
   process.stdin.on("data", (chunk) => {

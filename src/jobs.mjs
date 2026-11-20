@@ -585,6 +585,10 @@ export class JobManager {
 
       child = spawn(spawnSpec.command, spawnSpec.args, {
         cwd,
+        env:
+          engine === "agy"
+            ? { ...process.env, AGY_HANDOFF_NESTED: "1" }
+            : process.env,
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
         detached: process.platform !== "win32",

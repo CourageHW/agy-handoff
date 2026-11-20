@@ -9,6 +9,53 @@ export const VALID_REVIEW_STYLES = new Set(["standard", "adversarial"]);
 export const VALID_REVIEW_SCOPES = new Set(["uncommitted", "base", "commit", "custom"]);
 
 const activeForegroundPids = new Set();
+let exitHookRegistered = false;
+const managedSignalHandlers = new Map();
+const CLEANUP_SIGNALS =
+  process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
+
+function removeManagedSignalHooks() {
+  for (const [sig, handler] of managedSignalHandlers.entries()) {
+    process.off(sig, handler);
+  }
+  managedSignalHandlers.clear();
+}
+
+function registerForegroundPid(pid) {
+  if (!pid) return;
+  activeForegroundPids.add(pid);
+
+  if (!exitHookRegistered) {
+    exitHookRegistered = true;
+    process.on("exit", () => {
+      terminateAllForegroundCommands();
+    });
+  }
+
+  for (const sig of CLEANUP_SIGNALS) {
+    if (!managedSignalHandlers.has(sig) && process.listenerCount(sig) === 0) {
+      const handler = () => {
+        terminateAllForegroundCommands();
+        removeManagedSignalHooks();
+        try {
+          process.kill(process.pid, sig);
+        } catch {
+          process.exit(sig === "SIGINT" ? 130 : sig === "SIGHUP" ? 129 : 143);
+        }
+      };
+      managedSignalHandlers.set(sig, handler);
+      process.on(sig, handler);
+    }
+  }
+}
+
+function unregisterForegroundPid(pid) {
+  if (!pid) return;
+  activeForegroundPids.delete(pid);
+  if (activeForegroundPids.size === 0) {
+    removeManagedSignalHooks();
+  }
+}
 
 export function validateCwd(cwd) {
   const resolved = path.resolve(cwd || process.cwd());
@@ -496,7 +543,7 @@ export function runCommand({
     });
 
     if (child.pid) {
-      activeForegroundPids.add(child.pid);
+      registerForegroundPid(child.pid);
     }
 
     const stdoutChunks = [];
@@ -532,7 +579,7 @@ export function runCommand({
         signal.removeEventListener("abort", onAbort);
       }
       if (child.pid) {
-        activeForegroundPids.delete(child.pid);
+        unregisterForegroundPid(child.pid);
       }
       resolve({
         ...result,
@@ -764,6 +811,7 @@ export function buildAdversarialReviewPrompt({ targetDescription, extraInstructi
   const parts = [
     "Perform a strict, adversarial code review.",
     "Challenge assumptions, architecture, edge cases, failure modes, concurrency/race conditions, security risks, and subtle regressions.",
+    "Ground findings in the repository diff and local files; avoid redundant external web searches or broad unrelated repo sweeps.",
     "Report concrete findings ordered by severity (Critical, High, Medium, Low) with exact file paths, line references where possible, impact, and minimal actionable fixes.",
     "Do not pad with generic praise. If no material defects exist, state that explicitly and note any residual risk or untested paths.",
   ];
@@ -780,6 +828,7 @@ export function buildStandardReviewPrompt({ targetDescription, extraInstructions
   const parts = [
     "Perform a thorough, read-only code review.",
     "Identify bugs, logic errors, missing error handling, API misuse, performance issues, and test gaps.",
+    "Ground findings in the repository diff and local files; avoid redundant external web searches or broad unrelated repo sweeps.",
     "Group findings by severity with file references and concrete remediation suggestions.",
   ];
   if (targetDescription) {

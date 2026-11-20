@@ -318,31 +318,38 @@ export function buildCollaborativePlanPrompt({
     sections.push(
       [
         "## Planning Instructions (Phase: Discover / Pre-Plan Design Tree Scan)",
-        "1. Inspect the relevant repository files in read-only mode before proposing anything.",
+        "1. Inspect the relevant local repository files in read-only mode before proposing anything; avoid repetitive external web searches or broad repo sweeps when scoped files already answer the question.",
         "2. Do NOT ask questions that can be answered by reading the codebase; resolve those directly from the code.",
-        "3. Populate `openQuestions` with the highest-leverage design tree decisions (scope boundaries, interface contracts, state/concurrency trade-offs, failure recovery) that require explicit user confirmation.",
-        "4. Populate `fileChanges`, `implementationSteps`, `risksAndEdgeCases`, and `testStrategy` with your initial architectural assessment based on the existing codebase.",
+        "3. Populate `openQuestions` with the highest-leverage design tree decisions (max 6 items: scope boundaries, interface contracts, state/concurrency trade-offs, failure recovery) that require explicit user confirmation.",
+        "4. Populate `fileChanges`, `implementationSteps` (4–8 concise milestones), `risksAndEdgeCases` (top 4–6 items, each with `severity`, `title`, `detail`, `mitigation`), and `testStrategy` (3–5 bullets) concisely based on the existing codebase.",
       ].join("\n"),
     );
   } else {
     sections.push(
       [
         "## Planning Instructions (Phase: Design — Zero-Handwaving Engineering Blueprint)",
-        "1. Inspect the relevant repository files in read-only mode so every file path, module boundary, and signature matches the real codebase.",
-        "2. Follow strict zero-handwaving discipline (inspired by superpowers/writing-plans & grill-me):",
-        "   - Every entry in `fileChanges` must cite an exact repository-relative file path, whether to `create`, `modify`, or `delete` it, its single clear responsibility, and concrete change summary.",
-        "   - Break `implementationSteps` into bite-sized, ordered tasks with exact file paths, a concrete `testFirst` (failing test or assertion to write first), concrete `implementation` details (functions, data structures, edge-case guards), and an exact `verificationCommand`.",
+        "1. Local-First Exploration Budget: Inspect the scoped files and relevant local repository files in read-only mode so every file path, module boundary, and signature matches the real codebase. Do NOT spend turns running repetitive external web searches when local specs/code suffice; record any unverified external API assumption in `openQuestions` instead.",
+        "2. Follow strict zero-handwaving discipline with concise output budgets (high signal, no prose bloat or pasted full-file code):",
+        "   - `architectureSummary`: 1 concise paragraph (<= 150 words) covering module boundaries and data flow.",
+        "   - `fileChanges`: exact repository-relative file path, `action` (`create`|`modify`|`delete`), 1-sentence `responsibility`, and 1–2 sentence concrete `summary`.",
+        "   - `implementationSteps`: group closely coupled files into **6–12 ordered, bite-sized milestones**; each step must cite exact file paths, a concrete 2–3 sentence `testFirst` (failing test/assertion), a concrete 2–4 sentence `implementation` (key functions, signatures, edge-case guards), and an exact `verificationCommand`.",
         "   - Never write vague placeholders like 'handle edge cases' or 'add appropriate tests'.",
         "   - Respect YAGNI and the confirmed Spec Decisions above; do not add speculative abstractions.",
-        "3. In `risksAndEdgeCases`, surface non-obvious concurrency, security, permission boundary, backward-compatibility, or cross-platform failure modes and exact mitigations.",
-        "4. In `openQuestions`, list only genuine unresolved spec contradictions or ambiguities discovered while inspecting the code (leave empty if the spec is complete).",
+        "3. In `risksAndEdgeCases`, list the **top 5–8 highest-impact** non-obvious concurrency, security, permission boundary, backward-compatibility, or cross-platform failure modes. Every item MUST include all four required keys: `severity` (`critical`|`high`|`medium`|`low`), `title` (concise non-empty heading), `detail`, and `mitigation`.",
+        "4. In `testStrategy`, list 3–6 concise verification layers/commands. In `openQuestions`, list only genuine unresolved spec contradictions or ambiguities discovered while inspecting the code (0–5 items; leave empty if complete).",
       ].join("\n"),
     );
   }
 
   if (structured) {
     sections.push(
-      "Return ONLY a valid JSON object matching the required plan schema (`architectureSummary`, `fileChanges`, `implementationSteps`, `risksAndEdgeCases`, `testStrategy`, `openQuestions`).",
+      [
+        "Return ONLY a valid JSON object matching the required plan schema (`additionalProperties: false` — do not omit any required key or add extra keys):",
+        "- Top-level required keys: `architectureSummary`, `fileChanges`, `implementationSteps`, `risksAndEdgeCases`, `testStrategy`, `openQuestions`.",
+        "- Each `fileChanges[]` item requires: `file`, `action` (`create`|`modify`|`delete`), `responsibility`, `summary`.",
+        "- Each `implementationSteps[]` item requires: `step` (integer), `title`, `files` (string[]), `testFirst`, `implementation`, `verificationCommand`.",
+        "- Each `risksAndEdgeCases[]` item requires: `severity` (`critical`|`high`|`medium`|`low`), `title`, `detail`, `mitigation`.",
+      ].join("\n"),
     );
   }
 

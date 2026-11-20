@@ -920,6 +920,10 @@ test("handoff_plan & synthesizeCollaborativePlan: Grill-Me decisions, 3-to-1 pla
     });
     assert.equal(badPlan.parsed, null);
     assert.match(badPlan.error, /invalid action/i);
+
+    assert.match(prompt, /risksAndEdgeCases\[\]\` item requires: `severity`.*`title`.*`detail`.*`mitigation`/i);
+    assert.match(prompt, /Local-First Exploration Budget/i);
+    assert.match(prompt, /6–12 ordered, bite-sized milestones/i);
   } finally {
     fs.rmSync(dir, RM_OPTS);
   }

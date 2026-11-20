@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   compactText,
   createEventStreamParser,
+  parseAgyStreamJsonLine,
   parseClaudeStreamJsonLine,
   parseCodexJsonLine,
   parseCodexJsonlOutput,
@@ -187,4 +188,41 @@ test("createEventStreamParser decodes split multibyte UTF-8 chunks and isolates 
   assert.equal(seen[0].seq, 2);
   assert.equal(seen[0].summary, "Note: 한글😀테스트");
   assert.ok(!seen[0].summary.includes("\uFFFD"));
+});
+
+test("parseAgyStreamJsonLine and createEventStreamParser throttle streaming progress deltas", () => {
+  const deltaLine = JSON.stringify({
+    event: "step_update",
+    step_update: {
+      step_type: "agent_response",
+      state: "ACTIVE",
+      text_delta: "hello world",
+    },
+  });
+  assert.deepEqual(parseAgyStreamJsonLine(deltaLine), [
+    { kind: "progress", deltaChars: 11, summary: "Generating response..." },
+  ]);
+
+  const seen = [];
+  const parser = createEventStreamParser("agy", (ev) => seen.push(ev), {
+    progressThrottleMs: 60_000,
+  });
+  parser.push(`${deltaLine}\n${deltaLine}\n${deltaLine}\n`);
+  parser.push(
+    `${JSON.stringify({
+      event: "step_update",
+      step_update: {
+        step_type: "agent_response",
+        state: "DONE",
+        text_delta: "final answer",
+      },
+    })}\n`,
+  );
+  parser.flush();
+
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].kind, "progress");
+  assert.equal(seen[0].charsGenerated, 11);
+  assert.equal(seen[1].kind, "message");
+  assert.equal(seen[1].summary, "Note: final answer");
 });

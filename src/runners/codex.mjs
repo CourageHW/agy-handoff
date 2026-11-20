@@ -273,6 +273,7 @@ export function buildCodexExecSpec({
   skipGitRepoCheck = false,
   ephemeral = true,
   jsonStream = true,
+  disableWebSearch = false,
   outputFile,
   outputSchemaFile,
 }) {
@@ -308,6 +309,9 @@ export function buildCodexExecSpec({
     }
     if (effort) {
       args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
+    }
+    if (disableWebSearch) {
+      args.push("-c", 'web_search="disabled"');
     }
     if (skipGitRepoCheck) {
       args.push("--skip-git-repo-check");
@@ -346,6 +350,9 @@ export function buildCodexExecSpec({
   if (effort) {
     args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
   }
+  if (disableWebSearch) {
+    args.push("-c", 'web_search="disabled"');
+  }
   if (skipGitRepoCheck) {
     args.push("--skip-git-repo-check");
   }
@@ -379,6 +386,7 @@ export function buildCodexReviewSpec({
   effort,
   skipGitRepoCheck,
   jsonStream = true,
+  disableWebSearch = false,
   outputFile,
   outputSchemaFile,
 }) {
@@ -411,6 +419,9 @@ export function buildCodexReviewSpec({
     }
     if (effort) {
       args.push("-c", `model_reasoning_effort=${JSON.stringify(effort)}`);
+    }
+    if (disableWebSearch) {
+      args.push("-c", 'web_search="disabled"');
     }
     if (scope === "base") {
       args.push("--base", safeBase);
@@ -461,6 +472,7 @@ export function buildCodexReviewSpec({
     skipGitRepoCheck: resolvedSkipGitRepoCheck,
     ephemeral: true,
     jsonStream,
+    disableWebSearch,
     outputFile,
     outputSchemaFile,
   });
