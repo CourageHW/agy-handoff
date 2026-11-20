@@ -266,11 +266,9 @@ export class JobManager {
       !this.activeChildren.has(jobId) &&
       !this.liveState.has(jobId)
     ) {
-      const sameOwner = meta.ownerPid && meta.ownerPid === process.pid;
-      const stale = sameOwner
-        ? !isProcessAlive(meta.pid)
-        : (!meta.ownerPid || !isProcessAlive(meta.ownerPid)) &&
-          (!meta.pid || !isProcessAlive(meta.pid));
+      const processPid = meta.foreground ? meta.ownerPid || meta.pid : meta.pid;
+      const stale = !isProcessAlive(processPid) &&
+        (meta.ownerPid === process.pid || !isProcessAlive(meta.ownerPid));
       if (stale) {
         meta.status = "failed";
         meta.finishedAt = meta.finishedAt || new Date().toISOString();
@@ -401,7 +399,7 @@ export class JobManager {
       sessionId: null,
       costUsd: null,
       usage: null,
-      pid: process.pid,
+      pid: null,
       ownerPid: process.pid,
       status: "running",
       startedAt,
@@ -1318,7 +1316,7 @@ export class JobManager {
     if (meta.status === "running" || this.activeChildren.has(jobId)) {
       throw new Error(`Job is still running: ${jobId}`);
     }
-    if (meta.pid && isProcessAlive(meta.pid)) {
+    if (!meta.foreground && meta.pid && isProcessAlive(meta.pid)) {
       throw new Error(
         `Original process (pid ${meta.pid}) for job "${jobId}" is still alive; refusing concurrent retry.`,
       );

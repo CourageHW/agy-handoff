@@ -492,12 +492,9 @@ export function createEventStreamParser(engine, onEvent) {
       : engine === "agy"
         ? parseAgyStreamJsonLine
         : parseClaudeStreamJsonLine;
-  const decoder = new StringDecoder("utf8");
-  let buffer = "";
-  let dropUntilNewline = false;
   let seq = 0;
 
-  const emitLine = (line) => {
+  return createLineStreamParser((line) => {
     let events;
     try {
       events = parseLine(line);
@@ -517,7 +514,13 @@ export function createEventStreamParser(engine, onEvent) {
         // isolate consumer errors so remaining events in the chunk still parse
       }
     }
-  };
+  });
+}
+
+export function createLineStreamParser(emitLine, maxLineBytes = MAX_BUFFERED_LINE_BYTES) {
+  const decoder = new StringDecoder("utf8");
+  let buffer = "";
+  let dropUntilNewline = false;
 
   return {
     push(chunk) {
@@ -542,7 +545,7 @@ export function createEventStreamParser(engine, onEvent) {
       const parts = buffer.split(/\r?\n/);
       buffer = parts.pop() || "";
 
-      if (Buffer.byteLength(buffer, "utf8") > MAX_BUFFERED_LINE_BYTES) {
+      if (Buffer.byteLength(buffer, "utf8") > maxLineBytes) {
         buffer = "";
         dropUntilNewline = true;
       }

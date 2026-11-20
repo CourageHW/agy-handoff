@@ -2,6 +2,16 @@
 
 All notable changes to `agy-handoff` are documented in this file.
 
+## Unreleased
+
+### Fixed
+
+- AGY reviews and plans select `--mode plan`. Workspace-write calls select `accept-edits` and return quota failures on the first attempt.
+- Foreground AGY runs read the final result independently of the displayed log size. A stream that ends before a terminal result marks the run as failed.
+- Configuring a Codex or Claude binary path preserves independent AGY discovery for reviews and planning.
+- Failed foreground read-only jobs can be retried while the owning MCP server is running, including jobs recorded by earlier versions.
+- Plan target verification rejects a proposed child path when an existing ancestor is a regular file.
+
 ## [0.2.0] - 2026-11-21
 
 ### Added

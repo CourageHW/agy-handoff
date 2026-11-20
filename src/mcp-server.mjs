@@ -1206,12 +1206,7 @@ export async function handleToolCall(
       const codexBin = findCodexBinary();
       const claudeBin = findClaudeBinary();
       const agyBin = findAgyBinary();
-      const shouldIncludeAgy =
-        args.includeAgy !== false &&
-        (Boolean(agyBin) ||
-          args.includeAgy === true ||
-          process.env.AGY_HANDOFF_AGY_BIN !== undefined ||
-          (!process.env.AGY_HANDOFF_CODEX_BIN && !process.env.AGY_HANDOFF_CLAUDE_BIN));
+      const shouldIncludeAgy = args.includeAgy !== false;
 
       if (!codexBin && !claudeBin && (!shouldIncludeAgy || !agyBin)) {
         throw new Error(
@@ -1639,12 +1634,7 @@ export async function handleToolCall(
       const codexBin = findCodexBinary();
       const claudeBin = findClaudeBinary();
       const agyBin = findAgyBinary();
-      const shouldIncludeAgy =
-        args.includeAgy !== false &&
-        (Boolean(agyBin) ||
-          args.includeAgy === true ||
-          process.env.AGY_HANDOFF_AGY_BIN !== undefined ||
-          (!process.env.AGY_HANDOFF_CODEX_BIN && !process.env.AGY_HANDOFF_CLAUDE_BIN));
+      const shouldIncludeAgy = args.includeAgy !== false;
 
       if (!codexBin && !claudeBin && (!shouldIncludeAgy || !agyBin)) {
         throw new Error(

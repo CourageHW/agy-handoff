@@ -278,6 +278,7 @@ test("MCP handoff_cross_review sets ok=false and isError=true when all engines f
           params: {
             name: "handoff_cross_review",
             arguments: {
+              includeAgy: false,
               scope: "custom",
               prompt: "check",
               cwd: tmpDir,

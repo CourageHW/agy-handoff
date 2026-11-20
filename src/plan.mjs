@@ -154,7 +154,7 @@ export function verifyPlanFileTarget(fileChange, cwd) {
     let isRegularFile = false;
     let targetReal = null;
     try {
-      const lstat = fs.lstatSync(candidate);
+      fs.lstatSync(candidate);
       existsOnDisk = true;
       targetReal = fs.realpathSync(candidate);
       if (!isWithinWorkspace(workspaceReal, targetReal)) {
@@ -162,8 +162,11 @@ export function verifyPlanFileTarget(fileChange, cwd) {
       }
       const realStat = fs.statSync(targetReal);
       isRegularFile = realStat.isFile();
-    } catch {
-      existsOnDisk = false;
+    } catch (err) {
+      if (err.code === "ENOTDIR" || (existsOnDisk && err.code === "ENOENT")) {
+        return baseTarget("invalid_path", { existsOnDisk });
+      }
+      if (err.code !== "ENOENT") throw err;
     }
 
     if (!existsOnDisk) {
@@ -171,13 +174,20 @@ export function verifyPlanFileTarget(fileChange, cwd) {
       let parentDir = path.dirname(candidate);
       while (parentDir && parentDir !== path.dirname(parentDir)) {
         try {
+          const parent = fs.lstatSync(parentDir, { throwIfNoEntry: false });
+          if (!parent) {
+            parentDir = path.dirname(parentDir);
+            continue;
+          }
           const parentReal = fs.realpathSync(parentDir);
           if (!isWithinWorkspace(workspaceReal, parentReal)) {
             return baseTarget("path_outside_workspace");
           }
+          if (!fs.statSync(parentReal).isDirectory()) return baseTarget("invalid_path");
           break;
-        } catch {
-          parentDir = path.dirname(parentDir);
+        } catch (err) {
+          if (err.code === "ENOTDIR" || err.code === "ENOENT") return baseTarget("invalid_path");
+          throw err;
         }
       }
     }
@@ -571,6 +581,7 @@ function summarizeFileTargets(fileChanges) {
   let missingTargetFiles = 0;
   let existingFileCollisions = 0;
   let outsideWorkspaceFiles = 0;
+  let invalidPathFiles = 0;
 
   for (const fc of fileChanges) {
     const st = fc.targetVerification?.status;
@@ -580,8 +591,10 @@ function summarizeFileTargets(fileChanges) {
       missingTargetFiles += 1;
     } else if (st === "existing_file_collision") {
       existingFileCollisions += 1;
-    } else if (st === "path_outside_workspace" || st === "invalid_path") {
+    } else if (st === "path_outside_workspace") {
       outsideWorkspaceFiles += 1;
+    } else if (st === "invalid_path") {
+      invalidPathFiles += 1;
     }
   }
 
@@ -591,6 +604,7 @@ function summarizeFileTargets(fileChanges) {
     missingTargetFiles,
     existingFileCollisions,
     outsideWorkspaceFiles,
+    invalidPathFiles,
   };
 }
 

@@ -376,6 +376,7 @@ test("E2E MCP: doctor, read-only reviews, parallel cross-review, background life
 
     // 3. Parallel cross-review
     const cross = await client.callTool("handoff_cross_review", {
+      includeAgy: false,
       style: "adversarial",
       scope: "custom",
       prompt: "Compare both",
@@ -447,6 +448,7 @@ test("E2E MCP: doctor, read-only reviews, parallel cross-review, background life
 
     // 6. Collaborative Plan (handoff_plan) with Grill-Me decisions & disk file target verification
     const planResp = await client.callTool("handoff_plan", {
+      includeAgy: false,
       goal: "Add target.mjs module",
       phase: "design",
       decisions: [
@@ -503,6 +505,7 @@ test("E2E MCP: cross-review fallback on missing CLI, partial error tolerance, an
   });
   try {
     const crossMissing = await clientMissing.callTool("handoff_cross_review", {
+      includeAgy: false,
       scope: "custom",
       prompt: "Check fallback",
       cwd: tmpDir,
@@ -525,6 +528,7 @@ test("E2E MCP: cross-review fallback on missing CLI, partial error tolerance, an
   });
   try {
     const crossPartial = await clientPartial.callTool("handoff_cross_review", {
+      includeAgy: false,
       scope: "custom",
       prompt: "Check partial failure",
       cwd: tmpDir,
@@ -612,6 +616,25 @@ test("E2E MCP: cross-review fallback on missing CLI, partial error tolerance, an
     assert.equal(rSt.retryOf, failedStart.data.jobId);
     assert.ok(rSt.executionEvidence.observedToolCalls >= 1);
 
+    const foreground = await clientV2.callTool("handoff_delegate", {
+      engine: "codex",
+      prompt: "Check target.mjs",
+      cwd: tmpDir,
+    });
+    assert.equal(foreground.isError, true);
+    const foregroundRetry = await clientV2.callTool("handoff_job_retry", {
+      jobId: foreground.data.jobId,
+      fallbackEngine: true,
+    });
+    assert.equal(foregroundRetry.isError, false);
+    const retried = await clientV2.callTool("handoff_job_status", {
+      jobId: foregroundRetry.data.jobId,
+      waitSec: 5,
+      sinceSeq: 100,
+    });
+    assert.equal(retried.data.status, "completed");
+    assert.equal(retried.data.retryOf, foreground.data.jobId);
+
     // Structured cross-review with real codex+claude fake scripts
     const clientBoth = new McpStdioClient({
       AGY_HANDOFF_CONFIG: cfgPath,
@@ -636,6 +659,7 @@ test("E2E MCP: cross-review fallback on missing CLI, partial error tolerance, an
       assert.ok(autoRev.data.executionEvidence.observedToolCalls >= 1);
 
       const sCross = await clientBoth.callTool("handoff_cross_review", {
+        includeAgy: false,
         scope: "custom",
         context: { files: ["target.mjs"] },
         structured: true,

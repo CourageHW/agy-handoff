@@ -612,6 +612,23 @@ test("JobManager.retryJob and handoff_job_retry enforce read-only, block oversiz
     assert.equal(jm.getStatus(replayed.jobId, { eventsLimit: 0 }).retryOf, roJob.jobId);
     await waitDone(jm, replayed.jobId);
 
+    // Older foreground records used the owner's live PID as their process PID.
+    const tracker = jm.beginForegroundRun({
+      engine: "codex", action: "delegate", cwd: dir, mode: "read-only",
+      requestParams: { prompt: "inspect" },
+    });
+    await tracker.finish({ status: "failed", exitCode: 1 });
+    const oldMeta = jm.readMeta(tracker.jobId);
+    jm.writeMeta({ ...oldMeta, pid: process.pid });
+    const oldRetry = jm.retryJob(tracker.jobId, {
+      overrideSpec: {
+        engine: "codex", mode: "read-only", cwd: dir,
+        command: process.execPath, args: ["-e", "process.exit(0)"],
+      },
+    });
+    await waitDone(jm, oldRetry.jobId);
+    assert.equal(jm.getStatus(oldRetry.jobId).status, "completed");
+
     // 2. Tampered disk metadata (no inMemoryReplay entry) cannot run arbitrary command/args
     const forgedId = "forged-disk-cmd-1";
     jm.writeMeta({
@@ -711,6 +728,13 @@ test("handoff_plan & synthesizeCollaborativePlan: Grill-Me decisions, 3-to-1 pla
     assert.equal(
       verifyPlanFileTarget({ file: "../outside.mjs", action: "create" }, dir).status,
       "path_outside_workspace",
+    );
+    for (const file of ["existing.mjs/child.mjs", "existing.mjs/deep/child.mjs"]) {
+      assert.equal(verifyPlanFileTarget({ file, action: "create" }, dir).status, "invalid_path");
+    }
+    assert.equal(
+      verifyPlanFileTarget({ file: "new-dir/deep/child.mjs", action: "create" }, dir).status,
+      "valid_new_file",
     );
     assert.equal(
       verifyPlanFileTarget({ file: "subdir", action: "modify" }, dir).status,

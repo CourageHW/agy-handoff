@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { buildAgyReviewSpec, findAgyBinary, runAgyExec } from "../src/runners/agy.mjs";
 import {
   MIN_CLAUDE_VERSION,
   buildClaudeExecSpec,
@@ -638,4 +639,89 @@ test("parseSemver, compareSemver, detectMissingFlags, and CLI compatibility chec
     else process.env.AGY_HANDOFF_CODEX_BIN = prevCodex;
     fs.rmSync(dir, RM_OPTS);
   }
+});
+
+test("AGY discovery follows PATH independently of Codex and Claude overrides", (t) => {
+  const dir = fs.mkdtempSync(path.join(tmpDir, "agy-discovery-"));
+  t.after(() => fs.rmSync(dir, RM_OPTS));
+  const file = path.join(dir, process.platform === "win32" ? "agy.CMD" : "agy");
+  fs.writeFileSync(file, "", { mode: 0o755 });
+  const keys = ["PATH", "AGY_HANDOFF_AGY_BIN", "AGY_HANDOFF_CODEX_BIN", "AGY_HANDOFF_CLAUDE_BIN"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  process.env.PATH = dir;
+  delete process.env.AGY_HANDOFF_AGY_BIN;
+  process.env.AGY_HANDOFF_CODEX_BIN = "custom-codex";
+  process.env.AGY_HANDOFF_CLAUDE_BIN = "custom-claude";
+  assert.equal(findAgyBinary(), file);
+  process.env.AGY_HANDOFF_AGY_BIN = "none";
+  assert.equal(findAgyBinary(), null);
+});
+
+test("AGY enforces the selected mode and limits quota fallback to read-only runs", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(tmpDir, "agy-mode-"));
+  t.after(() => fs.rmSync(cwd, RM_OPTS));
+  const previous = process.env.AGY_HANDOFF_AGY_BIN;
+  t.after(() => {
+    if (previous === undefined) delete process.env.AGY_HANDOFF_AGY_BIN;
+    else process.env.AGY_HANDOFF_AGY_BIN = previous;
+  });
+  process.env.AGY_HANDOFF_AGY_BIN = createFakeExecutable(cwd, "agy", `
+    import fs from "node:fs";
+    const args = process.argv.slice(2);
+    fs.appendFileSync("calls", JSON.stringify(args) + "\\n");
+    const fallback = args.includes("gemini-4-argon-high");
+    const result = fallback ? {status: "SUCCESS", response: "done"} :
+      {status: "ERROR", error: "RESOURCE_EXHAUSTED"};
+    console.log(JSON.stringify({event: "result", result}));
+  `);
+  const calls = () => fs.readFileSync(path.join(cwd, "calls"), "utf8")
+    .trim().split("\n").map((line) => JSON.parse(line));
+  const mode = (args) => args[args.indexOf("--mode") + 1];
+  const write = await runAgyExec({ cwd, prompt: "task", mode: "workspace-write" });
+  assert.equal(write.ok, false);
+  assert.match(write.output, /RESOURCE_EXHAUSTED/);
+  assert.deepEqual(calls().map(mode), ["accept-edits"]);
+  const read = await runAgyExec({ cwd, prompt: "task" });
+  assert.equal(read.ok, true);
+  assert.equal(read.quotaFallback.toModel, "gemini-4-argon-high");
+  assert.deepEqual(calls().map(mode), ["accept-edits", "plan", "plan"]);
+  assert.equal(mode(buildAgyReviewSpec({ cwd }).args), "plan");
+});
+
+test("AGY reads terminal results past the stdout limit and fails incomplete streams", async (t) => {
+  const cwd = fs.mkdtempSync(path.join(tmpDir, "agy-stream-"));
+  t.after(() => fs.rmSync(cwd, RM_OPTS));
+  const previous = process.env.AGY_HANDOFF_AGY_BIN;
+  t.after(() => {
+    if (previous === undefined) delete process.env.AGY_HANDOFF_AGY_BIN;
+    else process.env.AGY_HANDOFF_AGY_BIN = previous;
+  });
+  process.env.AGY_HANDOFF_AGY_BIN = createFakeExecutable(cwd, "agy", `
+    const prompt = process.argv.at(-1);
+    console.log(JSON.stringify({event: "init", conversation_id: "run-id"}));
+    console.log(JSON.stringify({event: "progress", text: "x".repeat(300000)}));
+    if (prompt.endsWith("incomplete")) {
+      console.log(JSON.stringify({event: "progress", status: "SUCCESS"}));
+    } else {
+      const result = prompt.endsWith("fail") ? {status: "ERROR", error: "late error"}
+        : {status: "SUCCESS", structured_output: {report: "완료"}};
+      process.stdout.write(JSON.stringify({event: "result", result}));
+    }
+  `);
+  const fail = await runAgyExec({ cwd, prompt: "fail" });
+  assert.equal(fail.ok, false);
+  assert.equal(fail.output, "late error");
+  const success = await runAgyExec({ cwd, prompt: "success" });
+  assert.equal(success.ok, true);
+  assert.deepEqual(success.structuredOutput, { report: "완료" });
+  assert.equal(success.sessionId, "run-id");
+  const incomplete = await runAgyExec({ cwd, prompt: "incomplete" });
+  assert.equal(incomplete.ok, false);
+  assert.match(incomplete.output, /ended without a valid result/);
 });

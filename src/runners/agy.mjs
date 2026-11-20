@@ -3,13 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import {
   DEFAULT_TIMEOUT_MS,
+  MAX_OUTPUT_BYTES,
   VALID_REVIEW_SCOPES,
   VALID_REVIEW_STYLES,
   buildAdversarialReviewPrompt,
   buildStandardReviewPrompt,
   compareSemver,
   detectMissingFlags,
-  findBinary,
   getBinaryVersion,
   getHelpOutput,
   inspectBinary,
@@ -24,39 +24,33 @@ import {
   validateTimeoutSec,
   validateWorkspaceWriteCwd,
 } from "./common.mjs";
-import { createEventStreamParser } from "../events.mjs";
+import { createEventStreamParser, createLineStreamParser } from "../events.mjs";
 
 export const MIN_AGY_VERSION = "1.5.0";
 export const REQUIRED_AGY_FLAGS = [
   "--print",
   "--output-format",
   "--model",
+  "--mode",
   "--effort",
   "--json-schema",
   "--sandbox",
   "--disable-slash-commands",
 ];
 
+const MAX_RESULT_LINE_BYTES = 4 * 1024 * 1024;
 const ALLOWED_MODES = new Set(["read-only", "workspace-write"]);
 const ALLOWED_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
+function inspectAgyBinary() {
+  const override = process.env.AGY_HANDOFF_AGY_BIN;
+  if (override === "" || override === "none") return { installed: false, accessible: false };
+  return inspectBinary("agy", "AGY_HANDOFF_AGY_BIN");
+}
+
 export function findAgyBinary() {
-  if (process.env.AGY_HANDOFF_AGY_BIN !== undefined) {
-    if (
-      !process.env.AGY_HANDOFF_AGY_BIN ||
-      process.env.AGY_HANDOFF_AGY_BIN === "none"
-    ) {
-      return null;
-    }
-    return findBinary("agy", "AGY_HANDOFF_AGY_BIN");
-  }
-  if (
-    process.env.AGY_HANDOFF_CODEX_BIN ||
-    process.env.AGY_HANDOFF_CLAUDE_BIN
-  ) {
-    return null;
-  }
-  return findBinary("agy", "AGY_HANDOFF_AGY_BIN");
+  const info = inspectAgyBinary();
+  return info.accessible ? info.binary : null;
 }
 
 function evaluateAgyCompatibility(version, helpText) {
@@ -105,7 +99,7 @@ function evaluateAgyCompatibility(version, helpText) {
 }
 
 export async function inspectAgy() {
-  const info = inspectBinary("agy", "AGY_HANDOFF_AGY_BIN");
+  const info = inspectAgyBinary();
   if (!info.installed) {
     return {
       engine: "agy",
@@ -197,10 +191,9 @@ export function buildAgyExecSpec({
     "stream-json",
     "--disable-slash-commands",
     "--sandbox",
+    "--mode",
+    mode === "read-only" ? "plan" : "accept-edits",
   ];
-  if (mode === "workspace-write") {
-    args.push("--mode", "accept-edits");
-  }
   if (validModel) {
     args.push("--model", validModel);
   }
@@ -217,6 +210,7 @@ export function buildAgyExecSpec({
 
   return {
     args,
+    mode,
     cwd: resolvedCwd,
     stdin: null,
   };
@@ -275,114 +269,70 @@ export function buildAgyReviewSpec({
   });
 }
 
-export function parseAgyJsonOutput(stdout) {
-  const trimmed = (stdout || "").trim();
-  if (!trimmed) {
-    return {
-      text: "",
-      sessionId: null,
-      costUsd: null,
-      usage: null,
-      structuredOutput: null,
-      isError: false,
-      parseError: false,
-    };
-  }
-
-  const lines = trimmed
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
+function createAgyResultParser() {
   let sessionId = null;
-  let usage = null;
-  let resultText = null;
-  let structuredOutput = null;
-  let isError = false;
-  let errorText = null;
-  const deltaChunks = [];
-  let parsedAnyJson = false;
-
-  for (const line of lines) {
-    if (!line.startsWith("{")) continue;
+  let result = null;
+  let responseDelta = "";
+  const lines = createLineStreamParser((line) => {
+    let ev;
     try {
-      const ev = JSON.parse(line);
-      if (!ev || typeof ev !== "object") continue;
-      parsedAnyJson = true;
-
-      if (ev.conversation_id) {
-        sessionId = ev.conversation_id;
-      }
-      if (
-        ev.event === "step_update" &&
-        ev.step_update?.step_type === "agent_response" &&
-        typeof ev.step_update.text_delta === "string"
-      ) {
-        deltaChunks.push(ev.step_update.text_delta);
-      }
-      if (ev.event === "result" && ev.result && typeof ev.result === "object") {
-        const r = ev.result;
-        sessionId = r.conversation_id || sessionId;
-        usage = r.usage && typeof r.usage === "object" ? r.usage : usage;
-        if (
-          r.structured_output &&
-          typeof r.structured_output === "object" &&
-          !Array.isArray(r.structured_output)
-        ) {
-          structuredOutput = r.structured_output;
-        }
-        if (r.status === "ERROR") {
-          isError = true;
-          errorText = r.error || r.response || "Antigravity CLI reported an error.";
-        } else if (typeof r.response === "string") {
-          resultText = r.response.trim();
-        }
-      } else if (ev.status === "ERROR") {
-        isError = true;
-        errorText = ev.error || ev.response || "Antigravity CLI reported an error.";
-        sessionId = ev.conversation_id || sessionId;
-      } else if (ev.status === "SUCCESS" && typeof ev.response === "string") {
-        resultText = ev.response.trim();
-        sessionId = ev.conversation_id || sessionId;
-        if (
-          ev.structured_output &&
-          typeof ev.structured_output === "object" &&
-          !Array.isArray(ev.structured_output)
-        ) {
-          structuredOutput = ev.structured_output;
-        }
-      }
+      ev = JSON.parse(line);
     } catch {
-      // skip non-JSON warning/banner lines
+      return;
     }
-  }
-
-  if (!parsedAnyJson) {
-    return {
-      text: trimmed,
-      sessionId: null,
-      costUsd: null,
-      usage: null,
-      structuredOutput: null,
-      isError: false,
-      parseError: true,
-    };
-  }
-
-  const finalText = isError
-    ? errorText || deltaChunks.join("").trim() || trimmed
-    : resultText ??
-      (structuredOutput ? JSON.stringify(structuredOutput) : deltaChunks.join("").trim());
+    if (!ev || typeof ev !== "object") return;
+    sessionId = ev.conversation_id || sessionId;
+    if (ev.event === "step_update" && ev.step_update?.step_type === "agent_response") {
+      const delta = ev.step_update.text_delta;
+      if (typeof delta === "string" && responseDelta.length < MAX_OUTPUT_BYTES) {
+        responseDelta += delta.slice(0, MAX_OUTPUT_BYTES - responseDelta.length);
+      }
+    }
+    // Older CLI versions emit the terminal object without an event envelope.
+    if (ev.event && ev.event !== "result") return;
+    const terminal = ev.event === "result" ? ev.result : ev;
+    if (terminal?.status === "SUCCESS" || terminal?.status === "ERROR") {
+      result = terminal;
+      sessionId = terminal.conversation_id || sessionId;
+    }
+  }, MAX_RESULT_LINE_BYTES);
 
   return {
-    text: finalText,
-    sessionId,
-    costUsd: null,
-    usage,
-    structuredOutput,
-    isError,
-    parseError: false,
+    push: lines.push,
+    finish() {
+      lines.flush();
+      const isError = result?.status === "ERROR";
+      const structured = result?.structured_output;
+      const structuredOutput =
+        structured && typeof structured === "object" && !Array.isArray(structured)
+          ? structured
+          : null;
+      let text = "Antigravity CLI stream ended without a valid result.";
+      if (isError) {
+        const error = result.error || result.response || "Antigravity CLI reported an error.";
+        text = typeof error === "string" ? error : JSON.stringify(error);
+      } else if (typeof result?.response === "string") {
+        text = result.response.trim();
+      } else if (result) {
+        text = structuredOutput ? JSON.stringify(structuredOutput) : responseDelta.trim();
+      }
+      return {
+        text,
+        sessionId,
+        costUsd: null,
+        usage: result?.usage || null,
+        structuredOutput,
+        isError,
+        parseError: !result,
+      };
+    },
   };
+}
+
+export function parseAgyJsonOutput(stdout) {
+  const parser = createAgyResultParser();
+  parser.push(stdout || "");
+  return parser.finish();
 }
 
 function isQuotaExhaustedError(text) {
@@ -425,6 +375,7 @@ async function executeAgy(
       ? createEventStreamParser("agy", onEvent)
       : null;
 
+  const resultParser = createAgyResultParser();
   const result = await runCommand({
     command: binary,
     args: spec.args,
@@ -432,20 +383,26 @@ async function executeAgy(
     stdin: spec.stdin,
     timeoutMs,
     signal,
-    onStdoutChunk: parser ? (chunk) => parser.push(chunk) : undefined,
+    onStdoutChunk(chunk) {
+      resultParser.push(chunk);
+      parser?.push(chunk);
+    },
   });
 
   if (parser) {
     parser.flush();
   }
 
-  const parsed = parseAgyJsonOutput(result.rawStdout || result.stdout);
-  const combinedError = `${parsed.text || ""}\n${result.stderr || ""}`;
+  const parsed = resultParser.finish();
+  const combinedError = `${parsed.parseError ? result.stdout : parsed.text}\n${result.stderr || ""}`;
 
   // If primary Neon model hits temporary individual quota (429 RESOURCE_EXHAUSTED),
   // transparently fall back once to Gemini 4 Argon so 3-to-1 cross-review still completes.
   if (
     allowQuotaFallback &&
+    spec.mode === "read-only" &&
+    !result.timedOut &&
+    !result.aborted &&
     (parsed.isError || !result.ok) &&
     isQuotaExhaustedError(combinedError)
   ) {
@@ -481,7 +438,9 @@ async function executeAgy(
   }
 
   const ok = result.ok && !parsed.isError && !parsed.parseError;
-  let outputText = parsed.text || result.stderr || "(no output)";
+  let outputText = parsed.parseError
+    ? [parsed.text, result.stderr || result.stdout].filter(Boolean).join("\n")
+    : parsed.text || result.stderr || "(no output)";
   if (
     !result.ok &&
     isCliFlagCompatibilityError(`${result.stderr || ""}\n${result.stdout || ""}`)
